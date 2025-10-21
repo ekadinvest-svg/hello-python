@@ -10,7 +10,7 @@ class Main(QMainWindow):
         self.setWindowTitle("דמו PySide6")
         self.resize(600, 400)
 
-        label = QLabel("שלום אלעד — PySide6 באוויר!")
+        label = QLabel("שלום לך אלעד — PySide6 באוויר!")
         label.setAlignment(
             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
         )
