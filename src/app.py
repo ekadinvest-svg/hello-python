@@ -1,22 +1,38 @@
-import sys
 import json
 import os
+import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-from datetime import datetime
-os.environ.setdefault('QT_API', 'pyside6')
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-import matplotlib.dates as mdates
 
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QLabel, QLineEdit, QPushButton,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QToolBar, QStatusBar,
-    QTableWidget, QTableWidgetItem, QSizePolicy, QComboBox, QMenu,
-    QInputDialog, QMessageBox
-)
+os.environ.setdefault('QT_API', 'pyside6')
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
+os.environ["QT_API"] = "pyside6"
+import matplotlib.dates as mdates
+from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtGui import QAction, QDoubleValidator, QIntValidator, QValidator
-from PySide6.QtCore import Qt, QSize, QEvent
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QGridLayout,
+    QHBoxLayout,
+    QInputDialog,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 # טבלה שמאזנת עמודות לרוחב שווה בכל שינוי גודל
@@ -33,290 +49,143 @@ class EqualWidthTable(QTableWidget):
         cols = self.columnCount()
         if cols <= 0:
             return
-        # רוחב פנימי נטו
-        total = self.viewport().width()
-        w = max(50, total // cols)
-        for i in range(cols):
-            self.setColumnWidth(i, w)
+        width = self.viewport().width()
+        col_width = width // cols
+        for c in range(cols):
+            self.setColumnWidth(c, col_width)
 
 
-class MainWindow(QMainWindow):
-    def __init__(self):
+class ExerciseTab(QWidget):
+    def __init__(self, exercise_name: str):
         super().__init__()
-        self.setWindowTitle("אני מתאמן")
-        self.resize(950, 560)
-
-        # נתונים
-        self.exercise_names: list[str] = []
-        self.weights: list[str] = []
-        self.sets_list: list[int] = []
-        self.reps_list: list[int] = []
-        self.last_reps_list: list[int] = []
-
-        container = QWidget()
-        container.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
-
-    # Form: label and input on same row; inputs aligned in a single column
-        form_width = 150
-        form_height = 28
-
-        form_layout = QGridLayout()
-        form_layout.setHorizontalSpacing(12)
-        form_layout.setVerticalSpacing(6)
-
-        # --- שם תרגיל ---
-        name_label = QLabel("שם תרגיל:")
-        name_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        # use editable combo so user can type or pick from previous names
-        self.input_name = QComboBox()
-        self.input_name.setEditable(True)
-        self.input_name.setInsertPolicy(QComboBox.NoInsert)
-        # set combo size so the arrow button doesn't overlap the text
-        self.input_name.setFixedSize(form_width, form_height)
-        # placeholder on the internal line edit; make it slightly narrower than combo
-        name_line = self.input_name.lineEdit()
-        name_line.setPlaceholderText("לדוגמה: לחיצת חזה")
-        name_line.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        name_line.setMinimumWidth(max(10, form_width - 28))
-        name_line.setFixedHeight(form_height)
-        name_line.textChanged.connect(self._update_add_enabled)
-        form_layout.addWidget(name_label, 0, 0)
-        form_layout.addWidget(self.input_name, 0, 1)
-
-        # --- משקל ---
-        weight_label = QLabel("משקל:")
-        weight_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.input_weight = QLineEdit()
-        self.input_weight.setPlaceholderText("לדוגמה: 60.5")
-        self.input_weight.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.input_weight.setFixedSize(form_width, form_height)
-        dbl_validator = QDoubleValidator(0.0, 10000.0, 3, self)
-        dbl_validator.setNotation(QDoubleValidator.Notation.StandardNotation)
-        self.input_weight.setValidator(dbl_validator)
-        self.input_weight.textChanged.connect(self._update_add_enabled)
-        form_layout.addWidget(weight_label, 1, 0)
-        form_layout.addWidget(self.input_weight, 1, 1)
-
-        # --- סטים ---
-        sets_label = QLabel("סטים:")
-        sets_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.input_sets = QLineEdit()
-        self.input_sets.setPlaceholderText("לדוגמה: 4")
-        self.input_sets.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.input_sets.setFixedSize(form_width, form_height)
-        self.input_sets.setValidator(QIntValidator(1, 1000, self))
-        self.input_sets.textChanged.connect(self._update_add_enabled)
-        form_layout.addWidget(sets_label, 2, 0)
-        form_layout.addWidget(self.input_sets, 2, 1)
-
-        # --- חזרות ---
-        reps_label = QLabel("חזרות:")
-        reps_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.input_reps = QLineEdit()
-        self.input_reps.setPlaceholderText("לדוגמה: 12")
-        self.input_reps.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.input_reps.setFixedSize(form_width, form_height)
-        self.input_reps.setValidator(QIntValidator(1, 1000, self))
-        self.input_reps.textChanged.connect(self._update_add_enabled)
-        form_layout.addWidget(reps_label, 3, 0)
-        form_layout.addWidget(self.input_reps, 3, 1)
-
-        # --- חזרות בסט האחרון ---
-        last_reps_label = QLabel("סט אחרון:")
-        last_reps_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.input_last_reps = QLineEdit()
-        self.input_last_reps.setPlaceholderText("לדוגמה: 15")
-        self.input_last_reps.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.input_last_reps.setFixedSize(form_width, form_height)
-        self.input_last_reps.setValidator(QIntValidator(1, 1000, self))
-        self.input_last_reps.textChanged.connect(self._update_add_enabled)
-        form_layout.addWidget(last_reps_label, 4, 0)
-        form_layout.addWidget(self.input_last_reps, 4, 1)
-
-        # הוספת הטופס + אזור גרף בפריסה עליונה
-        top_row = QHBoxLayout()
-        # form widget
-        form_widget = QWidget()
-        form_widget.setLayout(form_layout)
-        # graph widget (canvas)
-        self.figure = Figure(figsize=(4, 3))
-        self.canvas = FigureCanvas(self.figure)
-        graph_container = QWidget()
-        graph_layout = QVBoxLayout(graph_container)
-        graph_layout.setContentsMargins(0, 0, 0, 0)
-        graph_layout.addWidget(self.canvas)
-        # place graph opposite the form
-        top_row.addWidget(graph_container)
-        top_row.addWidget(form_widget)
-        layout.addLayout(top_row)
-
-        # --- כפתורים ---
-        self.btn_add = QPushButton("הוסף")
-        self.btn_add.setEnabled(False)
-        self.btn_add.clicked.connect(self.add_entry)
-
-        self.btn_pop = QPushButton("נקה אחרון")
-        self.btn_pop.setEnabled(False)
-        self.btn_pop.clicked.connect(self.pop_last)
-
-        buttons_row = QHBoxLayout()
-        buttons_row.addWidget(self.btn_add)
-        # save button
-        self.btn_save = QPushButton("שמור")
-        self.btn_save.clicked.connect(self.save_state)
-        # plot button
-        self.btn_plot = QPushButton("צור גרף")
-        self.btn_plot.clicked.connect(self.plot_selected_exercise)
-        buttons_row.addWidget(self.btn_plot)
-        buttons_row.addWidget(self.btn_save)
-        buttons_row.addWidget(self.btn_pop)
-        buttons_row.addStretch(1)
-
-        # --- טבלה (תאריך, שם, משקל, סטים, חזרות, סט אחרון) ---
-        self.table = EqualWidthTable(0, 6)
-        # enable custom context menu for deleting rows
-        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self._show_table_context_menu)
-        self.table.setHorizontalHeaderLabels(["תאריך", "שם תרגיל", "משקל (Kg)", "סטים", "חזרות", "סט אחרון"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.table.setStyleSheet(
-            "QTableWidget {"
-            "  background: #f8f8f8;"
-            "  border: 1px solid #d9d9d9;"
-            "  border-radius: 6px;"
-            "  gridline-color: #cccccc;"
-            "  alternate-background-color: #f1f1f1;"
-            "}"
-        )
-
-        # double-click to edit date cell
-        self.table.cellDoubleClicked.connect(self._edit_date_cell)
-
-        # פריסה
-        # form_layout already added above; now add buttons and table
-        layout.addLayout(buttons_row)
-        layout.addWidget(self.table)
-
-        self.setCentralWidget(container)
-
-        # טולבר + סטוס
-        self._build_toolbar()
-        self.status = QStatusBar()
-        self.setStatusBar(self.status)
-        self.status.showMessage("מוכן להזנה")
-
-        # Enter מוסיף אם אפשר
-        # for combo use its lineEdit
-        name_line = self.input_name.lineEdit()
-        for w in [name_line, self.input_weight, self.input_sets, self.input_reps, self.input_last_reps]:
-            # QLineEdit has returnPressed
-            try:
-                w.returnPressed.connect(self._try_add_on_enter)
-            except Exception:
-                pass
-
-        # ניווט עם ↑/↓ בין השדות
-        self._inputs = [name_line, self.input_weight, self.input_sets, self.input_reps, self.input_last_reps]
-        for w in self._inputs:
-            w.installEventFilter(self)
-
-    def plot_selected_exercise(self):
-        # אם יש בחירה בטבלה - נשתמש בשם התרגיל מהשורה הנבחרת קודם
-        name = self.input_name.currentText().strip()
-        selected_rows = sorted({idx.row() for idx in self.table.selectedIndexes()})
-        if selected_rows:
-            # קח את השם מהשורה הראשונה שנבחרה
-            sel_item = self.table.item(selected_rows[0], 1)
-            if sel_item and sel_item.text().strip():
-                name = sel_item.text().strip()
-
-        if not name:
-            self.status.showMessage("בחר שם תרגיל לקביעת גרף", 2000)
-            return
-
-        # אסוף נתונים מהטבלה עבור אותו שם; המטרה: להשתמש בתאריכים בעמודה 0 כציר X
-        points: list[tuple[datetime, float]] = []
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 1)
-            if item and item.text() == name:
-                date_item = self.table.item(r, 0)
-                weight_item = self.table.item(r, 2)
-                # parse weight
-                try:
-                    wtxt = weight_item.text().split()[0] if weight_item is not None else "0"
-                    wval = float(wtxt.replace(",", "."))
-                except Exception:
-                    wval = 0.0
-                # parse date (expecting YYYY-MM-DD)
-                try:
-                    dstr = date_item.text().strip() if date_item is not None else ""
-                    dval = datetime.strptime(dstr, "%Y-%m-%d")
-                except Exception:
-                    # fallback to row index date (use today with offset)
-                    dval = datetime.now()
-                points.append((dval, wval))
-
-        if not points:
-            self.status.showMessage("אין רשומות עבור התרגיל הנבחר", 2000)
-            return
-
-        # מיין לפי תאריך
-        points.sort(key=lambda x: x[0])
-        xs = [p[0] for p in points]
-        ys = [p[1] for p in points]
-
-        # צייר גרף קווי עם ציר תאריכים
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        ax.plot_date(xs, ys, '-o')
-        # פורמט תאריכים על הציר
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        self.figure.autofmt_xdate(rotation=30)
-        # Hebrew (RTL) טקסטים - עטוף בסימון כיוון כדי שהמילה לא תופיע הפוכה
-        RTL = '\u202B'
-        POP = '\u202C'
-        ax.set_title(RTL + f"גרף משקל: {name}" + POP)
-        ax.set_xlabel(RTL + 'תאריך' + POP)
-        ax.set_ylabel(RTL + 'משקל' + POP)
-        ax.grid(True)
-        self.canvas.draw()
-
-        # טען מצב שמור אם קיים
+        self.exercise_name = exercise_name
+        self.setContentsMargins(5, 5, 5, 5)
+        self._init_ui()
         try:
             self.load_state()
         except Exception:
             pass
 
-    # ---------- ניווט עם חצים ----------
+    def _init_ui(self):
+        layout = QVBoxLayout()
 
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.KeyPress and obj in self._inputs:
-            key = event.key()
-            idx = self._inputs.index(obj)
-            if key == Qt.Key_Down:
-                self._inputs[(idx + 1) % len(self._inputs)].setFocus()
-                return True
-            if key == Qt.Key_Up:
-                self._inputs[(idx - 1) % len(self._inputs)].setFocus()
-                return True
-        return super().eventFilter(obj, event)
+        # טופס הכנסת נתונים
+        form = QGridLayout()
+        form.setContentsMargins(0, 0, 0, 0)
 
-    # ---------- עזרים ----------
+        # הגדרת שורות טופס ההכנסה
+        # תאריך ומשקל
+        self.input_weight = QLineEdit()
+        self.input_weight.setPlaceholderText("משקל")
+        self.input_weight.setValidator(QDoubleValidator(0, 1000, 3))
 
-    def _build_toolbar(self):
-        toolbar = QToolBar("כלים")
-        toolbar.setIconSize(QSize(16, 16))
-        self.addToolBar(toolbar)
-        act_clear = QAction("נקה הכול", self)
-        act_clear.triggered.connect(self.clear_all)
-        toolbar.addAction(act_clear)
+        # סטים וחזרות
+        self.input_sets = QLineEdit()
+        self.input_sets.setPlaceholderText("סטים")
+        self.input_sets.setValidator(QIntValidator(0, 1000))
+
+        self.input_reps = QLineEdit()
+        self.input_reps.setPlaceholderText("חזרות")
+        self.input_reps.setValidator(QIntValidator(0, 1000))
+
+        self.input_last_reps = QLineEdit()
+        self.input_last_reps.setPlaceholderText("סט אחרון")
+        self.input_last_reps.setValidator(QIntValidator(0, 1000))
+
+        # כפתורים: הוסף ומחק אחרון
+        self.btn_add = QPushButton("הוסף")
+        self.btn_pop = QPushButton("מחק אחרון")
+        self.btn_plot = QPushButton("הצג גרף")
+        self.btn_back = QPushButton("חזור לטבלה")
+        self.btn_back.hide()
+        
+        # סגנון מיוחד לכפתור הצגת גרף
+        self.btn_plot.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+            }
+            QPushButton:hover {
+                background-color: #388E3C;
+            }
+        """)
+        self.btn_pop.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+        """)
+
+        self.btn_add.setEnabled(False)
+        self.btn_pop.setEnabled(False)
+
+        # הוספת שדות לטופס ללא תוויות
+        fields = [
+            self.input_weight,
+            self.input_sets,
+            self.input_reps,
+            self.input_last_reps,
+        ]
+
+        for i, field in enumerate(fields):
+            form.addWidget(field, i, 0)
+
+        # אירועי עדכון לאימות קלט
+        self._inputs = [
+            self.input_weight,
+            self.input_sets,
+            self.input_reps,
+            self.input_last_reps,
+        ]
+        for inp in self._inputs:
+            inp.textChanged.connect(self._update_add_enabled)
+            inp.returnPressed.connect(self._try_add_on_enter)
+            inp.installEventFilter(self)
+
+        # טבלת נתונים עם עמודות שוות רוחב
+        self.table = EqualWidthTable()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["סט אחרון", "חזרות", "סטים", "משקל", "תאריך"])
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)  # ביטול עריכה ישירה
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_table_context_menu)
+        self.table.cellDoubleClicked.connect(self._edit_date_cell)  # חיבור לאירוע לחיצה כפולה
+
+        # אירועי כפתורים
+        self.btn_add.clicked.connect(self.add_entry)
+        self.btn_pop.clicked.connect(self.pop_last)
+        self.btn_plot.clicked.connect(self.plot_selected_exercise)
+        self.btn_back.clicked.connect(self.restore_normal_view)
+
+        # מסגרת גרף
+        self.figure = Figure(figsize=(6, 4))
+        self.canvas = FigureCanvas(self.figure)
+
+        # הוספת רכיבים לממשק
+        bottom_buttons = QHBoxLayout()
+        bottom_buttons.addWidget(self.btn_add)
+        bottom_buttons.addWidget(self.btn_pop)
+        bottom_buttons.addWidget(self.btn_plot)
+        bottom_buttons.addWidget(self.btn_back)
+
+        self.input_container = QWidget()
+        self.input_container.setLayout(form)
+        self.input_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+
+        layout.addWidget(self.input_container)
+        layout.addLayout(bottom_buttons)
+        layout.addWidget(self.table)
+        layout.addWidget(self.canvas)
+
+        self.setLayout(layout)
+
+    def _update_add_enabled(self):
+        weight_ok = self._weight_state(self.input_weight.text().strip().replace(",", ".")) == QValidator.State.Acceptable
+        sets_ok = self._int_state(self.input_sets) == QValidator.State.Acceptable
+        reps_ok = self._int_state(self.input_reps) == QValidator.State.Acceptable
+        last_reps_ok = self._int_state(self.input_last_reps) == QValidator.State.Acceptable
+        self.btn_add.setEnabled(weight_ok and sets_ok and reps_ok and last_reps_ok)
 
     def _weight_state(self, text: str) -> QValidator.State:
         v = self.input_weight.validator()
@@ -334,29 +203,32 @@ class MainWindow(QMainWindow):
                 return res[0]
         return QValidator.State.Invalid
 
-    # ---------- לוגיקה ----------
-
-    def _update_add_enabled(self):
-        name_ok = self.input_name.currentText().strip() != ""
-        weight_ok = self._weight_state(self.input_weight.text().strip().replace(",", ".")) == QValidator.State.Acceptable
-        sets_ok = self._int_state(self.input_sets) == QValidator.State.Acceptable
-        reps_ok = self._int_state(self.input_reps) == QValidator.State.Acceptable
-        last_reps_ok = self._int_state(self.input_last_reps) == QValidator.State.Acceptable
-        self.btn_add.setEnabled(name_ok and weight_ok and sets_ok and reps_ok and last_reps_ok)
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.KeyPress and obj in self._inputs:
+            key = event.key()
+            idx = self._inputs.index(obj)
+            if key == Qt.Key.Key_Down:
+                self._inputs[(idx + 1) % len(self._inputs)].setFocus()
+                return True
+            if key == Qt.Key.Key_Up:
+                self._inputs[(idx - 1) % len(self._inputs)].setFocus()
+                return True
+        return super().eventFilter(obj, event)
 
     def _try_add_on_enter(self):
         if self.btn_add.isEnabled():
             self.add_entry()
 
     def add_entry(self):
-        name = self.input_name.currentText().strip()
         weight_raw = self.input_weight.text().strip().replace(",", ".")
         sets_raw = self.input_sets.text().strip()
         reps_raw = self.input_reps.text().strip()
         last_reps_raw = self.input_last_reps.text().strip()
 
-        if not (name and weight_raw and sets_raw and reps_raw and last_reps_raw):
-            self.status.showMessage("מלא את כל השדות.", 2000)
+        if not (weight_raw and sets_raw and reps_raw and last_reps_raw):
+            window = self.window()
+            if isinstance(window, QMainWindow) and window.statusBar():
+                window.statusBar().showMessage("מלא את כל השדות.", 2000)
             return
 
         try:
@@ -366,7 +238,9 @@ class MainWindow(QMainWindow):
             reps_val = int(reps_raw)
             last_reps_val = int(last_reps_raw)
         except ValueError:
-            self.status.showMessage("קלט לא תקין.", 2000)
+            window = self.window()
+            if isinstance(window, QMainWindow) and window.statusBar():
+                window.statusBar().showMessage("קלט לא תקין.", 2000)
             return
 
         # תאריך
@@ -376,122 +250,153 @@ class MainWindow(QMainWindow):
         row = self.table.rowCount()
         self.table.insertRow(row)
 
-        data = [date_str, name, f"{weight_str} Kg", sets_val, reps_val, last_reps_val]
-        aligns = [
-            Qt.AlignmentFlag.AlignHCenter,  # תאריך
-            Qt.AlignmentFlag.AlignLeft,     # שם תרגיל
-            Qt.AlignmentFlag.AlignHCenter,  # משקל
-            Qt.AlignmentFlag.AlignHCenter,  # סטים
-            Qt.AlignmentFlag.AlignHCenter,  # חזרות
-            Qt.AlignmentFlag.AlignHCenter,  # סט אחרון
-        ]
+        data = [last_reps_val, reps_val, sets_val, f"{weight_str} Kg", date_str]
+        aligns = [Qt.AlignmentFlag.AlignHCenter] * 5  # כל העמודות ממורכזות
+        
         for col, value in enumerate(data):
             item = QTableWidgetItem(str(value))
             item.setTextAlignment(aligns[col] | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row, col, item)
 
-        # הוספת השם ל־combo אם חדש
-        if name:
-            existing = [self.input_name.itemText(i) for i in range(self.input_name.count())]
-            if name not in existing:
-                self.input_name.addItem(name)
-
-        # ניקוי שדות (לשדה combo ננקה את ה-lineEdit בלבד)
-        self.input_name.lineEdit().clear()
+        # ניקוי שדות
         for field in [self.input_weight, self.input_sets, self.input_reps, self.input_last_reps]:
             field.clear()
-        self.input_name.setFocus()
+        self.input_weight.setFocus()
         self._update_add_enabled()
         self.btn_pop.setEnabled(True)
-        self.status.showMessage(f"התווסף: {name} ({weight_str} Kg, {sets_val}x{reps_val})", 2000)
+        window = self.window()
+        if isinstance(window, QMainWindow) and window.statusBar():
+            window.statusBar().showMessage(f"התווסף: {weight_str} Kg, {sets_val}x{reps_val}", 2000)
 
     def pop_last(self):
         rows = self.table.rowCount()
         if rows > 0:
-            # get name from last row before removing
-            item = self.table.item(rows - 1, 1)
-            name = item.text() if item is not None else None
             self.table.removeRow(rows - 1)
-            # remove name from combo if no longer present in table
-            if name:
-                self._remove_name_if_unused(name)
             self.btn_pop.setEnabled(self.table.rowCount() > 0)
-            self.status.showMessage("נמחק האחרון.", 2000)
+            window = self.window()
+            if isinstance(window, QMainWindow) and window.statusBar():
+                window.statusBar().showMessage("נמחק האחרון.", 2000)
 
-    def clear_all(self):
-        self.table.setRowCount(0)
-        # clear combo's line edit only (don't remove saved names)
-        try:
-            self.input_name.lineEdit().clear()
-        except Exception:
-            # fallback if input_name is a QLineEdit
+    def plot_selected_exercise(self):
+        # הסתר את האזורים שלא נחוצים בתצוגת גרף
+        self.input_container.hide()
+        self.table.hide()
+        self.btn_add.hide()
+        self.btn_pop.hide()
+        self.btn_plot.hide()
+        self.btn_back.show()
+
+        # אסוף את כל הנתונים מהטבלה
+        points: list[tuple[datetime, float]] = []
+        for r in range(self.table.rowCount()):
+            date_item = self.table.item(r, 4)  # תאריך עכשיו בעמודה האחרונה
+            weight_item = self.table.item(r, 3)  # משקל עכשיו בעמודה הרביעית
             try:
-                self.input_name.clear()
+                wtxt = weight_item.text().split()[0] if weight_item is not None else "0"
+                wval = float(wtxt.replace(",", "."))
             except Exception:
-                pass
-        for field in [self.input_weight, self.input_sets, self.input_reps, self.input_last_reps]:
-            field.clear()
-        self._update_add_enabled()
-        self.btn_pop.setEnabled(False)
-        self.status.showMessage("נוקה הכול", 2000)
+                wval = 0.0
+            try:
+                dstr = date_item.text().strip() if date_item is not None else ""
+                dval = datetime.strptime(dstr, "%Y-%m-%d")
+            except Exception:
+                dval = datetime.now()
+            points.append((dval, wval))
 
-    # ---------- שמירה/טעינה של מצב ----------
+        if not points:
+            window = self.window()
+            if isinstance(window, QMainWindow) and window.statusBar():
+                window.statusBar().showMessage("אין רשומות להצגה", 2000)
+            return
+
+        # מיין לפי תאריך
+        points.sort(key=lambda x: x[0])
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+
+        # צייר גרף קווי עם ציר תאריכים
+        self.figure.clear()
+        # הגדר סגנון גרף
+        self.figure.patch.set_facecolor('#ffffff')
+        ax = self.figure.add_subplot(111)
+        ax.set_facecolor('#f8f9fa')
+        
+        dates = mdates.date2num(xs)
+        ax.plot(dates, ys, '-o', color='#2196F3', linewidth=2, markersize=8, 
+                markerfacecolor='white', markeredgecolor='#2196F3', markeredgewidth=2)
+        
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        self.figure.autofmt_xdate(rotation=30)
+        
+        # שימוש בסימן LRM (Left-to-Right Mark) לסידור הטקסט
+        LRM = '\u200E'
+        title = f"גרף משקלים - {self.exercise_name}"
+        ax.set_title(f"{LRM}{title[::-1]}", fontsize=12, pad=15)  # הופך את סדר האותיות
+        ax.set_xlabel(f"{LRM}{'תאריך'[::-1]}", fontsize=10, labelpad=10)  # הופך את סדר האותיות
+        ax.set_ylabel(f"{LRM}{'משקל )ק\"ג('[::-1]}", fontsize=10, labelpad=10)  # הופך את סדר האותיות עם סוגריים הפוכים
+        
+        # הגדרת רשת עדינה
+        ax.grid(True, linestyle='--', alpha=0.3)
+        ax.set_axisbelow(True)  # הרשת מאחורי הנתונים
+        
+        # עיצוב שולי הגרף
+        for spine in ax.spines.values():
+            spine.set_color('#cccccc')
+            
+        # התאמת צבע וגודל תוויות הצירים
+        ax.tick_params(axis='both', colors='#666666', labelsize=9)
+        
+        self.canvas.draw()
+
     def save_state(self):
         state = {
-            "names": [self.input_name.itemText(i) for i in range(self.input_name.count())],
             "rows": []
         }
         for r in range(self.table.rowCount()):
-            row_data = [self.table.item(r, c).text() if self.table.item(r, c) is not None else "" for c in range(self.table.columnCount())]
+            row_data = []
+            for c in range(self.table.columnCount()):
+                item = self.table.item(r, c)
+                row_data.append(item.text() if item is not None else "")
             state["rows"].append(row_data)
-        path = Path.cwd() / "exercise_state.json"
+
+        path = Path.cwd() / f"exercise_state_{self.exercise_name}.json"
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False, indent=2)
-            self.status.showMessage(f"נשמר ל־{path}", 2000)
+            window = self.window()
+            if isinstance(window, QMainWindow) and window.statusBar():
+                window.statusBar().showMessage(f"נשמר ל־{path}", 2000)
         except Exception as e:
-            self.status.showMessage(f"שגיאה בשמירה: {e}", 2000)
+            window = self.window()
+            if isinstance(window, QMainWindow) and window.statusBar():
+                window.statusBar().showMessage(f"שגיאה בשמירה: {e}", 2000)
 
     def load_state(self):
-        path = Path.cwd() / "exercise_state.json"
+        path = Path.cwd() / f"exercise_state_{self.exercise_name}.json"
         if not path.exists():
             return
         try:
             with open(path, "r", encoding="utf-8") as f:
                 state = json.load(f)
-            # load names
-            self.input_name.clear()
-            for name in state.get("names", []):
-                self.input_name.addItem(name)
-            # load rows
             self.table.setRowCount(0)
             for row_data in state.get("rows", []):
                 r = self.table.rowCount()
                 self.table.insertRow(r)
                 for c, val in enumerate(row_data):
                     item = QTableWidgetItem(str(val))
-                    # center or left align as before
-                    aligns = [Qt.AlignmentFlag.AlignHCenter, Qt.AlignmentFlag.AlignLeft, Qt.AlignmentFlag.AlignHCenter, Qt.AlignmentFlag.AlignHCenter, Qt.AlignmentFlag.AlignHCenter, Qt.AlignmentFlag.AlignHCenter]
-                    item.setTextAlignment(aligns[c] | Qt.AlignmentFlag.AlignVCenter)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
                     self.table.setItem(r, c, item)
             self.btn_pop.setEnabled(self.table.rowCount() > 0)
-            self.status.showMessage(f"טען מצב מ־{path}", 2000)
+            window = self.window()
+            if isinstance(window, QMainWindow) and window.statusBar():
+                window.statusBar().showMessage(f"טען מצב מ־{path}", 2000)
         except Exception as e:
-            self.status.showMessage(f"שגיאה בטעינה: {e}", 2000)
-
-    def _remove_name_if_unused(self, name: str):
-        # אם אין מופעים של השם בטבלה, הסר מהקומבו
-        for r in range(self.table.rowCount()):
-            it = self.table.item(r, 1)
-            if it and it.text() == name:
-                return
-        # לא מצאנו מופעים - נסיר מהקומבו
-        for i in range(self.input_name.count() - 1, -1, -1):
-            if self.input_name.itemText(i) == name:
-                self.input_name.removeItem(i)
+            window = self.window()
+            if isinstance(window, QMainWindow) and window.statusBar():
+                window.statusBar().showMessage(f"שגיאה בטעינה: {e}", 2000)
 
     def _show_table_context_menu(self, pos):
-        # הצג תפריט שמאפשר למחוק שורות נבחרות
         menu = QMenu()
         act_delete = menu.addAction("מחק שורות נבחרות")
         action = menu.exec(self.table.viewport().mapToGlobal(pos))
@@ -499,50 +404,372 @@ class MainWindow(QMainWindow):
             self.delete_selected_rows()
 
     def delete_selected_rows(self):
-        # מחק את כל השורות שנבחרו, והסר שמות לא בשימוש
         selected = sorted({idx.row() for idx in self.table.selectedIndexes()}, reverse=True)
         for r in selected:
-            item = self.table.item(r, 1)
-            name = item.text() if item is not None else None
             self.table.removeRow(r)
-            if name:
-                self._remove_name_if_unused(name)
         self.btn_pop.setEnabled(self.table.rowCount() > 0)
 
+    def restore_normal_view(self):
+        """החזרת התצוגה למצב רגיל"""
+        self.input_container.show()
+        self.table.show()
+        self.btn_add.show()
+        self.btn_pop.show()
+        self.btn_plot.show()
+        self.btn_back.hide()
+        
     def _edit_date_cell(self, row: int, column: int):
-        # Allow editing only the date column (0)
-        if column != 0:
+        if column != 4:  # עמודת תאריך היא 4
+            self.table.clearSelection()
             return
         item = self.table.item(row, column)
+        if item is None:
+            return
         current = item.text() if item is not None else datetime.now().strftime("%Y-%m-%d")
-        # ask user for new date (YYYY-MM-DD)
         text, ok = QInputDialog.getText(self, "ערוך תאריך", "תאריך (YYYY-MM-DD):", text=current)
         if not ok:
             return
         new = text.strip()
-        # validate
         try:
             _ = datetime.strptime(new, "%Y-%m-%d")
         except Exception:
             QMessageBox.warning(self, "תאריך לא תקין", "פורמט התאריך צריך להיות YYYY-MM-DD")
             return
-        # update cell
-        new_item = QTableWidgetItem(new)
-        new_item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-        self.table.setItem(row, column, new_item)
-        # persist change
+        item.setText(new)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+        # עדכון רוחב העמודה כדי שיתאים לתוכן
+        self.table._equalize_columns()
+        # נקה בחירה ופוקוס
+        self.table.clearSelection()
+        self.table.clearFocus()
+        self.table.setCurrentCell(-1, -1)
         try:
             self.save_state()
         except Exception:
             pass
 
 
-def main():
-    app = QApplication(sys.argv)
-    w = MainWindow()
-    w.show()
-    sys.exit(app.exec())
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
 
+        # הגדרות חלון ראשי
+        self.setWindowTitle("מעקב משקלים")
+        self.setMinimumSize(QSize(800, 600))
+        self.showMaximized()  # פתיחה במסך מלא
+
+        # יצירת סטטוס בר
+        self.setStatusBar(QStatusBar())
+
+        # יצירת מיכל מרכזי
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        layout = QVBoxLayout()
+        main_widget.setLayout(layout)
+
+        # הגדרת טאבים
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+
+        # יצירת סרגל כלים
+        toolbar = QToolBar()
+        self.addToolBar(toolbar)
+        
+        # כפתור שמירה בסרגל כלים
+        save_action = QAction("שמור", self)
+        save_action.triggered.connect(self._save_current_tab)
+        toolbar.addAction(save_action)
+
+        # תפריט קובץ
+        file_menu = self.menuBar().addMenu("קובץ")
+        
+        # פעולת שמירה
+        save_action = QAction("שמור", self)
+        save_action.triggered.connect(self._save_current_tab)
+        file_menu.addAction(save_action)
+        
+        # פעולת שחזור
+        restore_action = QAction("שחזר", self)
+        restore_action.triggered.connect(self._restore_current_tab)
+        file_menu.addAction(restore_action)
+
+        # תפריט עריכה
+        edit_menu = self.menuBar().addMenu("עריכה")
+        
+        # פעולת הוספת אימון
+        add_exercise_action = QAction("הוסף אימון", self)
+        add_exercise_action.triggered.connect(self._add_exercise)
+        edit_menu.addAction(add_exercise_action)
+
+        # פעולת ניקוי עמוד נוכחי
+        clear_current_action = QAction("נקה עמוד נוכחי", self)
+        clear_current_action.triggered.connect(self._clear_current_tab)
+        edit_menu.addAction(clear_current_action)
+
+        # פעולת ניקוי כל העמודים
+        clear_all_action = QAction("נקה את כל העמודים", self)
+        clear_all_action.triggered.connect(self._clear_all_tabs)
+        edit_menu.addAction(clear_all_action)
+
+        # שמירה בסגירה
+        self._closing = False
+
+    def _add_exercise(self):
+        title, ok = QInputDialog.getText(self, "הוספת אימון", "שם האימון:")
+        if ok and title.strip():
+            # בדוק אם תרגיל עם שם זהה כבר קיים
+            existing = set()
+            for i in range(self.tab_widget.count()):
+                tab = self.tab_widget.widget(i)
+                if isinstance(tab, ExerciseTab):
+                    existing.add(tab.exercise_name)
+            if title not in existing:
+                tab = ExerciseTab(title)
+                self.tab_widget.addTab(tab, title)
+                self.tab_widget.setCurrentWidget(tab)
+
+    def _save_current_tab(self):
+        current = self.tab_widget.currentWidget()
+        if isinstance(current, ExerciseTab):
+            try:
+                current.save_state()
+            except Exception as e:
+                QMessageBox.warning(self, "שגיאה בשמירה", str(e))
+
+    def _restore_current_tab(self):
+        current = self.tab_widget.currentWidget()
+        if isinstance(current, ExerciseTab):
+            try:
+                current.load_state()
+                self.statusBar().showMessage(f"שוחזר בהצלחה מקובץ", 2000)
+            except Exception as e:
+                QMessageBox.warning(self, "שגיאה בשחזור", str(e))
+
+    def _clear_current_tab(self):
+        current = self.tab_widget.currentWidget()
+        if not isinstance(current, ExerciseTab):
+            return
+            
+        reply = QMessageBox.question(
+            self,
+            "אישור ניקוי",
+            f"האם אתה בטוח שברצונך למחוק את כל הנתונים מהעמוד '{current.exercise_name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                path = Path.cwd() / f"exercise_state_{current.exercise_name}.json"
+                if path.exists():
+                    os.remove(path)
+                
+                # מחק את הטאב הנוכחי
+                idx = self.tab_widget.currentIndex()
+                self.tab_widget.removeTab(idx)
+                current.deleteLater()
+
+                # אם זה היה הטאב האחרון, הצג דיאלוג ליצירת אימון חדש
+                if self.tab_widget.count() == 0:
+                    title, ok = QInputDialog.getText(self, "אימון ראשון", "שם האימון:")
+                    if ok and title.strip():
+                        tab = ExerciseTab(title)
+                        self.tab_widget.addTab(tab, title)
+
+                self.statusBar().showMessage(f"נמחקו כל הנתונים מהעמוד '{current.exercise_name}'", 2000)
+            except Exception as e:
+                QMessageBox.warning(self, "שגיאה בניקוי", str(e))
+
+    def _clear_all_tabs(self):
+        reply = QMessageBox.question(
+            self,
+            "אישור ניקוי",
+            "האם אתה בטוח שברצונך למחוק את כל הנתונים מכל העמודים?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                # מחק את כל הקבצים
+                for file in Path.cwd().glob("exercise_state_*.json"):
+                    try:
+                        os.remove(file)
+                    except Exception:
+                        pass
+
+                # סגור את כל הטאבים
+                while self.tab_widget.count() > 0:
+                    tab = self.tab_widget.widget(0)
+                    self.tab_widget.removeTab(0)
+                    if isinstance(tab, ExerciseTab):
+                        tab.deleteLater()
+
+                self.statusBar().showMessage("נמחקו כל הנתונים וכל העמודים", 2000)
+
+                # הצג דיאלוג ליצירת אימון חדש
+                title, ok = QInputDialog.getText(self, "אימון ראשון", "שם האימון:")
+                if ok and title.strip():
+                    tab = ExerciseTab(title)
+                    self.tab_widget.addTab(tab, title)
+
+            except Exception as e:
+                QMessageBox.warning(self, "שגיאה בניקוי", str(e))
+
+    def closeEvent(self, event):
+        if self._closing:
+            event.accept()
+            return
+        self._closing = True
+        try:
+            # שמירת מצב לפני סגירה
+            for i in range(self.tab_widget.count()):
+                tab = self.tab_widget.widget(i)
+                if isinstance(tab, ExerciseTab):
+                    try:
+                        tab.save_state()
+                    except Exception:
+                        pass
+        finally:
+            event.accept()
+
+
+def apply_stylesheet(app: QApplication):
+    # הגדרת סגנון כללי לאפליקציה
+    app.setStyleSheet("""
+        QMainWindow {
+            background-color: #f0f0f0;
+        }
+        QTabWidget::pane {
+            border: 1px solid #cccccc;
+            background: white;
+            border-radius: 5px;
+        }
+        QTabBar::tab {
+            background: #e1e1e1;
+            border: 1px solid #cccccc;
+            padding: 8px 15px;
+            margin-right: 2px;
+            border-top-left-radius: 4px;
+            border-top-right-radius: 4px;
+            font-size: 11pt;
+        }
+        QTabBar::tab:selected {
+            background: white;
+            border-bottom-color: white;
+        }
+        QLineEdit {
+            padding: 6px;
+            border: 1px solid #cccccc;
+            border-radius: 4px;
+            background-color: white;
+            font-size: 11pt;
+        }
+        QLineEdit:focus {
+            border: 1px solid #2196F3;
+        }
+        QPushButton {
+            padding: 6px 12px;
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 11pt;
+        }
+        QPushButton:hover {
+            background-color: #1976D2;
+        }
+        QPushButton:disabled {
+            background-color: #BDBDBD;
+        }
+        QTableWidget {
+            border: 1px solid #cccccc;
+            border-radius: 4px;
+            font-size: 11pt;
+        }
+        QTableWidget::item {
+            padding: 4px;
+            min-height: 24px;
+        }
+        QTableWidget {
+            padding: 4px;
+            min-height: 200px;
+        }
+        QTableWidget {
+            gridline-color: #cccccc;
+        }
+        QTableWidget::item:selected {
+            background-color: #E3F2FD;
+            color: black;
+        }
+        QHeaderView::section {
+            background-color: #f5f5f5;
+            padding: 6px;
+            border: 1px solid #cccccc;
+            font-size: 11pt;
+            font-weight: bold;
+        }
+        QLabel {
+            font-size: 11pt;
+        }
+        QMenu {
+            background-color: white;
+            border: 1px solid #cccccc;
+        }
+        QMenu::item {
+            padding: 6px 20px;
+        }
+        QMenu::item:selected {
+            background-color: #E3F2FD;
+        }
+        QStatusBar {
+            background-color: #f5f5f5;
+            color: #333333;
+            font-size: 10pt;
+        }
+        QToolBar {
+            background-color: #f5f5f5;
+            border-bottom: 1px solid #cccccc;
+            spacing: 5px;
+            padding: 5px;
+        }
+        QToolBar QToolButton {
+            background-color: #2196F3;
+            color: white;
+            border-radius: 4px;
+            padding: 5px 10px;
+            font-size: 11pt;
+        }
+        QToolBar QToolButton:hover {
+            background-color: #1976D2;
+        }
+        QMessageBox {
+            font-size: 11pt;
+        }
+        QMessageBox QPushButton {
+            min-width: 80px;
+        }
+    """)
 
 if __name__ == "__main__":
-    main()
+    app = QApplication(sys.argv)
+    apply_stylesheet(app)
+    window = MainWindow()
+
+    # חפש קבצי שמירה קיימים
+    exercise_files = list(Path.cwd().glob("exercise_state_*.json"))
+    
+    if exercise_files:
+        # אם יש קבצים קיימים, טען אותם
+        for file in exercise_files:
+            # חלץ את שם התרגיל מהקובץ
+            exercise_name = file.stem.replace("exercise_state_", "")
+            tab = ExerciseTab(exercise_name)
+            window.tab_widget.addTab(tab, exercise_name)
+    else:
+        # אם אין קבצים קיימים, בקש שם אימון חדש
+        title, ok = QInputDialog.getText(window, "אימון ראשון", "שם האימון:")
+        if ok and title.strip():
+            tab = ExerciseTab(title)
+            window.tab_widget.addTab(tab, title)
+
+    window.show()
+    app.exec()
