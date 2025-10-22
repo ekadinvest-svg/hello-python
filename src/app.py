@@ -6,19 +6,25 @@ from pathlib import Path
 from typing import Any
 
 os.environ.setdefault('QT_API', 'pyside6')
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 os.environ["QT_API"] = "pyside6"
 import matplotlib.dates as mdates
 from PySide6.QtCore import QEvent, QSize, Qt
-from PySide6.QtGui import QAction, QDoubleValidator, QIntValidator, QValidator
+from PySide6.QtGui import (
+    QAction,
+    QDoubleValidator,
+    QIntValidator,
+    QKeySequence,
+    QValidator,
+)
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QInputDialog,
+    QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
@@ -60,11 +66,14 @@ class ExerciseTab(QWidget):
         super().__init__()
         self.exercise_name = exercise_name
         self.setContentsMargins(5, 5, 5, 5)
+        self._has_unsaved_changes = False
         self._init_ui()
         try:
             self.load_state()
         except Exception:
             pass
+        # אחרי טעינת המצב, נאפס את דגל השינויים
+        self._has_unsaved_changes = False
 
     def _init_ui(self):
         layout = QVBoxLayout()
@@ -92,14 +101,15 @@ class ExerciseTab(QWidget):
         self.input_last_reps.setPlaceholderText("סט אחרון")
         self.input_last_reps.setValidator(QIntValidator(0, 1000))
 
-        # כפתורים: הוסף ומחק אחרון
+        # כפתורים: הוסף ומחק
         self.btn_add = QPushButton("הוסף")
         self.btn_pop = QPushButton("מחק אחרון")
+        self.btn_delete_row = QPushButton("מחק שורה")
         self.btn_plot = QPushButton("הצג גרף")
         self.btn_back = QPushButton("חזור לטבלה")
         self.btn_back.hide()
         
-        # סגנון מיוחד לכפתור הצגת גרף
+        # סגנון מיוחד לכפתורים
         self.btn_plot.setStyleSheet("""
             QPushButton {
                 background-color: #4CAF50;
@@ -108,30 +118,76 @@ class ExerciseTab(QWidget):
                 background-color: #388E3C;
             }
         """)
-        self.btn_pop.setStyleSheet("""
+        
+        delete_buttons_style = """
             QPushButton {
                 background-color: #f44336;
             }
             QPushButton:hover {
                 background-color: #d32f2f;
             }
-        """)
+            QPushButton:disabled {
+                background-color: #ffcdd2;
+            }
+        """
+        self.btn_pop.setStyleSheet(delete_buttons_style)
+        self.btn_delete_row.setStyleSheet(delete_buttons_style)
+        
+        # התחלתי מצב כפתורי מחיקה - מבוטלים
+        self.btn_pop.setEnabled(False)
+        self.btn_delete_row.setEnabled(False)
 
         self.btn_add.setEnabled(False)
         self.btn_pop.setEnabled(False)
+        self.btn_delete_row.setEnabled(False)
 
+        # יצירת תצוגת סיכום
+        summary_layout = QVBoxLayout()
+        
+        # עיצוב תוויות הסיכום
+        summary_style = """
+            QLabel {
+                font-size: 14pt;
+                font-weight: bold;
+                color: #1976D2;
+                padding: 5px;
+            }
+        """
+        
+        self.total_exercises_label = QLabel("סה\"כ אימונים: 0")
+        self.total_exercises_label.setStyleSheet(summary_style)
+        self.total_exercises_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        
+        self.total_weight_label = QLabel("סה\"כ משקל שהרמת: 0 ק\"ג")
+        self.total_weight_label.setStyleSheet(summary_style)
+        self.total_weight_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        
+        summary_layout.addWidget(self.total_exercises_label)
+        summary_layout.addWidget(self.total_weight_label)
+        summary_layout.addStretch()
+        
         # הוספת שדות לטופס ללא תוויות
+        input_layout = QVBoxLayout()
         fields = [
             self.input_weight,
             self.input_sets,
             self.input_reps,
             self.input_last_reps,
         ]
+        
+        # הגדרת רוחב מקסימלי לשדות הקלט
+        for field in fields:
+            field.setMaximumWidth(150)
+            input_layout.addWidget(field)
+        
+        # סידור השדות והסיכום בשורה אחת
+        inputs_and_summary = QHBoxLayout()
+        inputs_and_summary.addLayout(input_layout)
+        inputs_and_summary.addLayout(summary_layout)
+        
+        form.addLayout(inputs_and_summary, 0, 0)
 
-        for i, field in enumerate(fields):
-            form.addWidget(field, i, 0)
-
-        # אירועי עדכון לאימות קלט
+        # טבלת נתונים עם עמודות שוות רוחב
         self._inputs = [
             self.input_weight,
             self.input_sets,
@@ -155,8 +211,12 @@ class ExerciseTab(QWidget):
         # אירועי כפתורים
         self.btn_add.clicked.connect(self.add_entry)
         self.btn_pop.clicked.connect(self.pop_last)
+        self.btn_delete_row.clicked.connect(self.delete_selected_row)
         self.btn_plot.clicked.connect(self.plot_selected_exercise)
         self.btn_back.clicked.connect(self.restore_normal_view)
+        
+        # חיבור לאירוע בחירת שורה בטבלה
+        self.table.itemSelectionChanged.connect(self._update_delete_button)
 
         # מסגרת גרף
         self.figure = Figure(figsize=(6, 4))
@@ -166,6 +226,7 @@ class ExerciseTab(QWidget):
         bottom_buttons = QHBoxLayout()
         bottom_buttons.addWidget(self.btn_add)
         bottom_buttons.addWidget(self.btn_pop)
+        bottom_buttons.addWidget(self.btn_delete_row)
         bottom_buttons.addWidget(self.btn_plot)
         bottom_buttons.addWidget(self.btn_back)
 
@@ -219,6 +280,50 @@ class ExerciseTab(QWidget):
         if self.btn_add.isEnabled():
             self.add_entry()
 
+    def _calculate_total_weight(self):
+        """חישוב סך המשקל המצטבר מכל האימונים"""
+        total = 0
+        for row in range(self.table.rowCount()):
+            try:
+                # קבלת הערכים מהטבלה
+                try:
+                    weight_item = self.table.item(row, 3)
+                    sets_item = self.table.item(row, 2)
+                    reps_item = self.table.item(row, 1)
+                    last_reps_item = self.table.item(row, 0)
+                    
+                    # בדיקה מקיפה של תקינות הנתונים
+                    if not all([
+                        isinstance(item, QTableWidgetItem) and item.text()
+                        for item in [weight_item, sets_item, reps_item, last_reps_item]
+                    ]):
+                        continue
+
+                    # המרת הערכים למספרים
+                    weight_text = weight_item.text().split()[0].replace(",", ".")  # type: ignore
+                    weight = float(weight_text)
+                    sets = int(sets_item.text())  # type: ignore
+                    reps = int(reps_item.text())  # type: ignore
+                    last_reps = int(last_reps_item.text())  # type: ignore
+                    
+                    # חישוב: (סטים-1 * חזרות * משקל) + (סט אחרון * משקל)
+                    total += ((sets - 1) * reps * weight) + (last_reps * weight)
+                except (ValueError, AttributeError, IndexError):
+                    continue
+            except (ValueError, AttributeError, IndexError):
+                continue
+        return total
+
+    def _update_summary(self):
+        """עדכון תוויות הסיכום"""
+        # עדכון מספר האימונים
+        exercises_count = self.table.rowCount()
+        self.total_exercises_label.setText(f"סה\"כ אימונים: {exercises_count}")
+        
+        # עדכון סך המשקל
+        total_weight = self._calculate_total_weight()
+        self.total_weight_label.setText(f"סה\"כ משקל שהרמת: {total_weight:,.0f} ק\"ג")
+
     def add_entry(self):
         weight_raw = self.input_weight.text().strip().replace(",", ".")
         sets_raw = self.input_sets.text().strip()
@@ -230,6 +335,8 @@ class ExerciseTab(QWidget):
             if isinstance(window, QMainWindow) and window.statusBar():
                 window.statusBar().showMessage("מלא את כל השדות.", 2000)
             return
+            
+        self._has_unsaved_changes = True
 
         try:
             weight_val = float(weight_raw)
@@ -257,6 +364,9 @@ class ExerciseTab(QWidget):
             item = QTableWidgetItem(str(value))
             item.setTextAlignment(aligns[col] | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row, col, item)
+        
+        # עדכון הסיכום
+        self._update_summary()
 
         # ניקוי שדות
         for field in [self.input_weight, self.input_sets, self.input_reps, self.input_last_reps]:
@@ -273,6 +383,8 @@ class ExerciseTab(QWidget):
         if rows > 0:
             self.table.removeRow(rows - 1)
             self.btn_pop.setEnabled(self.table.rowCount() > 0)
+            self._has_unsaved_changes = True
+            self._update_summary()  # עדכון הסיכום
             window = self.window()
             if isinstance(window, QMainWindow) and window.statusBar():
                 window.statusBar().showMessage("נמחק האחרון.", 2000)
@@ -283,6 +395,7 @@ class ExerciseTab(QWidget):
         self.table.hide()
         self.btn_add.hide()
         self.btn_pop.hide()
+        self.btn_delete_row.hide()  # הסתרת כפתור מחק שורה
         self.btn_plot.hide()
         self.btn_back.show()
 
@@ -364,6 +477,7 @@ class ExerciseTab(QWidget):
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False, indent=2)
+            self._has_unsaved_changes = False  # מאפס את דגל השינויים אחרי שמירה
             window = self.window()
             if isinstance(window, QMainWindow) and window.statusBar():
                 window.statusBar().showMessage(f"נשמר ל־{path}", 2000)
@@ -405,9 +519,12 @@ class ExerciseTab(QWidget):
 
     def delete_selected_rows(self):
         selected = sorted({idx.row() for idx in self.table.selectedIndexes()}, reverse=True)
-        for r in selected:
-            self.table.removeRow(r)
-        self.btn_pop.setEnabled(self.table.rowCount() > 0)
+        if selected:  # רק אם יש שורות נבחרות
+            self._has_unsaved_changes = True
+            for r in selected:
+                self.table.removeRow(r)
+            self.btn_pop.setEnabled(self.table.rowCount() > 0)
+            self._update_summary()
 
     def restore_normal_view(self):
         """החזרת התצוגה למצב רגיל"""
@@ -415,8 +532,26 @@ class ExerciseTab(QWidget):
         self.table.show()
         self.btn_add.show()
         self.btn_pop.show()
+        self.btn_delete_row.show()  # החזרת כפתור מחק שורה
         self.btn_plot.show()
         self.btn_back.hide()
+
+    def _update_delete_button(self):
+        """עדכון מצב כפתור מחיקת שורה בהתאם לבחירה"""
+        selected_rows = len({idx.row() for idx in self.table.selectedIndexes()})
+        self.btn_delete_row.setEnabled(selected_rows == 1)
+    
+    def delete_selected_row(self):
+        """מחיקת השורה הנבחרת"""
+        selected_rows = {idx.row() for idx in self.table.selectedIndexes()}
+        if len(selected_rows) == 1:
+            row = selected_rows.pop()
+            self.table.removeRow(row)
+            self._has_unsaved_changes = True
+            self.btn_pop.setEnabled(self.table.rowCount() > 0)
+            window = self.window()
+            if isinstance(window, QMainWindow) and window.statusBar():
+                window.statusBar().showMessage("השורה נמחקה.", 2000)
         
     def _edit_date_cell(self, row: int, column: int):
         if column != 4:  # עמודת תאריך היא 4
@@ -475,29 +610,30 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar()
         self.addToolBar(toolbar)
         
-        # כפתור שמירה בסרגל כלים
+        # כפתור שמירה בסרגל כלים עם קיצור מקלדת
         save_action = QAction("שמור", self)
+        save_action.setShortcuts([QKeySequence("Ctrl+S"), QKeySequence("Ctrl+ד")])  # תמיכה באנגלית ועברית
         save_action.triggered.connect(self._save_current_tab)
         toolbar.addAction(save_action)
 
         # תפריט קובץ
         file_menu = self.menuBar().addMenu("קובץ")
         
-        # פעולת שמירה
-        save_action = QAction("שמור", self)
-        save_action.triggered.connect(self._save_current_tab)
+        # פעולת שמירה בתפריט (משתמש באותו Action כמו הסרגל)
         file_menu.addAction(save_action)
         
         # פעולת שחזור
         restore_action = QAction("שחזר", self)
+        restore_action.setShortcuts([QKeySequence("Ctrl+R"), QKeySequence("Ctrl+ר")])  # תמיכה באנגלית ועברית
         restore_action.triggered.connect(self._restore_current_tab)
         file_menu.addAction(restore_action)
 
         # תפריט עריכה
         edit_menu = self.menuBar().addMenu("עריכה")
         
-        # פעולת הוספת אימון
-        add_exercise_action = QAction("הוסף אימון", self)
+        # פעולת הוספת תרגיל
+        add_exercise_action = QAction("הוסף תרגיל", self)
+        add_exercise_action.setShortcuts([QKeySequence("Ctrl+N"), QKeySequence("Ctrl+מ")])  # תמיכה באנגלית ועברית
         add_exercise_action.triggered.connect(self._add_exercise)
         edit_menu.addAction(add_exercise_action)
 
@@ -515,7 +651,7 @@ class MainWindow(QMainWindow):
         self._closing = False
 
     def _add_exercise(self):
-        title, ok = QInputDialog.getText(self, "הוספת אימון", "שם האימון:")
+        title, ok = QInputDialog.getText(self, "הוספת תרגיל", "שם התרגיל:")
         if ok and title.strip():
             # בדוק אם תרגיל עם שם זהה כבר קיים
             existing = set()
@@ -541,7 +677,7 @@ class MainWindow(QMainWindow):
         if isinstance(current, ExerciseTab):
             try:
                 current.load_state()
-                self.statusBar().showMessage(f"שוחזר בהצלחה מקובץ", 2000)
+                self.statusBar().showMessage("שוחזר בהצלחה מקובץ", 2000)
             except Exception as e:
                 QMessageBox.warning(self, "שגיאה בשחזור", str(e))
 
@@ -568,9 +704,9 @@ class MainWindow(QMainWindow):
                 self.tab_widget.removeTab(idx)
                 current.deleteLater()
 
-                # אם זה היה הטאב האחרון, הצג דיאלוג ליצירת אימון חדש
+                # אם זה היה הטאב האחרון, הצג דיאלוג ליצירת תרגיל חדש
                 if self.tab_widget.count() == 0:
-                    title, ok = QInputDialog.getText(self, "אימון ראשון", "שם האימון:")
+                    title, ok = QInputDialog.getText(self, "תרגיל ראשון", "שם התרגיל:")
                     if ok and title.strip():
                         tab = ExerciseTab(title)
                         self.tab_widget.addTab(tab, title)
@@ -605,8 +741,8 @@ class MainWindow(QMainWindow):
 
                 self.statusBar().showMessage("נמחקו כל הנתונים וכל העמודים", 2000)
 
-                # הצג דיאלוג ליצירת אימון חדש
-                title, ok = QInputDialog.getText(self, "אימון ראשון", "שם האימון:")
+                # הצג דיאלוג ליצירת תרגיל חדש
+                title, ok = QInputDialog.getText(self, "תרגיל ראשון", "שם התרגיל:")
                 if ok and title.strip():
                     tab = ExerciseTab(title)
                     self.tab_widget.addTab(tab, title)
@@ -618,17 +754,47 @@ class MainWindow(QMainWindow):
         if self._closing:
             event.accept()
             return
-        self._closing = True
-        try:
-            # שמירת מצב לפני סגירה
-            for i in range(self.tab_widget.count()):
-                tab = self.tab_widget.widget(i)
-                if isinstance(tab, ExerciseTab):
+            
+        # בדיקה אם יש שינויים שלא נשמרו
+        unsaved_tabs = []
+        for i in range(self.tab_widget.count()):
+            tab = self.tab_widget.widget(i)
+            if isinstance(tab, ExerciseTab) and tab._has_unsaved_changes:
+                unsaved_tabs.append(tab)
+        
+        if unsaved_tabs:
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Icon.Question)
+            msg.setWindowTitle("שינויים לא שמורים")
+            if len(unsaved_tabs) == 1:
+                msg.setText(f"יש שינויים שלא נשמרו בעמוד '{unsaved_tabs[0].exercise_name}'.\nהאם ברצונך לשמור לפני היציאה?")
+            else:
+                msg.setText("יש שינויים שלא נשמרו במספר עמודים.\nהאם ברצונך לשמור לפני היציאה?")
+            msg.setStandardButtons(
+                QMessageBox.StandardButton.Save | 
+                QMessageBox.StandardButton.Discard | 
+                QMessageBox.StandardButton.Cancel
+            )
+            msg.setDefaultButton(QMessageBox.StandardButton.Save)
+            ret = msg.exec()
+            
+            if ret == QMessageBox.StandardButton.Save:
+                # שמירת כל העמודים עם שינויים
+                for tab in unsaved_tabs:
                     try:
                         tab.save_state()
                     except Exception:
                         pass
-        finally:
+                self._closing = True
+                event.accept()
+            elif ret == QMessageBox.StandardButton.Discard:
+                self._closing = True
+                event.accept()
+            else:  # Cancel
+                event.ignore()
+                return
+        else:
+            self._closing = True
             event.accept()
 
 
@@ -765,8 +931,8 @@ if __name__ == "__main__":
             tab = ExerciseTab(exercise_name)
             window.tab_widget.addTab(tab, exercise_name)
     else:
-        # אם אין קבצים קיימים, בקש שם אימון חדש
-        title, ok = QInputDialog.getText(window, "אימון ראשון", "שם האימון:")
+        # אם אין קבצים קיימים, בקש שם תרגיל חדש
+        title, ok = QInputDialog.getText(window, "תרגיל ראשון", "שם התרגיל:")
         if ok and title.strip():
             tab = ExerciseTab(title)
             window.tab_widget.addTab(tab, title)
