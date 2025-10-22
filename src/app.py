@@ -5,6 +5,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from openpyxl import Workbook
+from openpyxl.chart import LineChart, Reference
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+
 os.environ.setdefault('QT_API', 'pyside6')
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -250,16 +255,16 @@ class ExerciseTab(QWidget):
             self.input_last_reps,
         ]
         
-        # הגדרת רוחב מקסימלי לשדות הקלט
+         # הגדרת רוחב מקסימלי לשדות הקלט
         for field in fields:
             field.setMaximumWidth(150)
             input_layout.addWidget(field)
         
         # סידור השדות והסיכום בשורה אחת
         inputs_and_summary = QHBoxLayout()
-        inputs_and_summary.addLayout(input_layout)
-        inputs_and_summary.addStretch()
         inputs_and_summary.addLayout(summary_layout)
+        inputs_and_summary.addStretch()
+        inputs_and_summary.addLayout(input_layout)
         
         form.addLayout(inputs_and_summary, 0, 0)
 
@@ -946,6 +951,12 @@ class MainWindow(QMainWindow):
         restore_action.triggered.connect(self._restore_current_tab)
         file_menu.addAction(restore_action)
         
+        # פעולת ייצוא לאקסל
+        export_action = QAction("ייצא לאקסל", self)
+        export_action.setShortcuts([QKeySequence("Ctrl+E"), QKeySequence("Ctrl+ק")])  # תמיכה באנגלית ועברית
+        export_action.triggered.connect(self._export_to_excel)
+        file_menu.addAction(export_action)
+        
         file_menu.addSeparator()
         
         # פעולת עזרה
@@ -1010,6 +1021,201 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("שוחזר בהצלחה מקובץ", 2000)
             except Exception as e:
                 QMessageBox.warning(self, "שגיאה בשחזור", str(e))
+    
+    def _export_to_excel(self):
+        """ייצוא כל העמודים לקובץ אקסל, כל עמוד לגיליון נפרד"""
+        # בדוק אם יש עמודים לייצא
+        if self.tab_widget.count() == 0:
+            QMessageBox.warning(self, "שגיאה", "אין עמודים לייצוא")
+            return
+        
+        # צור שם קובץ ברירת מחדל
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_filename = f"תרגילים_{timestamp}.xlsx"
+        
+        # בקש מהמשתמש שם קובץ
+        from PySide6.QtWidgets import QFileDialog
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "שמור קובץ אקסל",
+            default_filename,
+            "Excel Files (*.xlsx)"
+        )
+        
+        if not filename:
+            return  # המשתמש ביטל
+        
+        try:
+            # צור חוברת עבודה חדשה
+            wb = Workbook()
+            # הסר את הגיליון הראשון שנוצר אוטומטית
+            if wb.active:
+                wb.remove(wb.active)
+            
+            # עבור על כל העמודים באפליקציה
+            for tab_index in range(self.tab_widget.count()):
+                tab = self.tab_widget.widget(tab_index)
+                if not isinstance(tab, ExerciseTab):
+                    continue
+                
+                exercise_name = tab.exercise_name
+                
+                # צור גיליון חדש לתרגיל הזה
+                ws = wb.create_sheet(title=exercise_name[:31])  # שם גיליון מוגבל ל-31 תווים
+                
+                # הגדר את הגיליון להיות מימין לשמאל (RTL)
+                ws.sheet_view.rightToLeft = True
+                
+                # הוסף כותרות
+                headers = ["תאריך", "משקל", "סטים", "חזרות", "סט אחרון"]
+                ws.append(headers)
+                
+                # עצב את שורת הכותרת
+                header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+                header_font = Font(bold=True, color="FFFFFF", size=12)
+                header_alignment = Alignment(horizontal="center", vertical="center")
+                
+                for col_num, header in enumerate(headers, 1):
+                    cell = ws.cell(row=1, column=col_num)
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = header_alignment
+                
+                # הוסף נתונים מהטבלה
+                table = tab.table
+                for row in range(table.rowCount()):
+                    row_data = []
+                    
+                    # קרא את כל הערכים מהשורה
+                    values = []
+                    for col in range(table.columnCount()):
+                        item = table.item(row, col)
+                        values.append(item.text() if item else "")
+                    
+                    # הוסף בסדר הפוך: תאריך (4), משקל (3), סטים (2), חזרות (1), סט אחרון (0)
+                    for col_index in [4, 3, 2, 1, 0]:
+                        text = values[col_index]
+                        if not text:
+                            row_data.append("")
+                            continue
+                        
+                        # עמודה 4 מהטבלה היא תאריך
+                        if col_index == 4:
+                            try:
+                                date_obj = datetime.strptime(text, "%d/%m/%Y")
+                                row_data.append(date_obj)
+                            except ValueError:
+                                row_data.append(text)
+                        # עמודה 3 היא משקל - נסיר את "kg"
+                        elif col_index == 3:
+                            clean_text = text.replace("kg", "").replace("KG", "").strip()
+                            parts = text.split()
+                            if parts:
+                                clean_text = parts[0].replace(",", ".")
+                            
+                            try:
+                                if '.' in clean_text or ',' in clean_text:
+                                    row_data.append(float(clean_text.replace(",", ".")))
+                                else:
+                                    row_data.append(int(clean_text))
+                            except (ValueError, AttributeError):
+                                try:
+                                    import re
+                                    number_str = re.search(r'[\d.,]+', text)
+                                    if number_str:
+                                        num_text = number_str.group().replace(",", ".")
+                                        if '.' in num_text:
+                                            row_data.append(float(num_text))
+                                        else:
+                                            row_data.append(int(num_text))
+                                    else:
+                                        row_data.append(0)
+                                except Exception:
+                                    row_data.append(0)
+                        # עמודות 0-2 הן מספרים אחרים
+                        else:
+                            try:
+                                if '.' in text:
+                                    row_data.append(float(text))
+                                else:
+                                    row_data.append(int(text))
+                            except ValueError:
+                                row_data.append(text)
+                    
+                    ws.append(row_data)
+                
+                # הפוך את הטבלה לטבלה חכמה של Excel
+                from openpyxl.worksheet.table import Table, TableStyleInfo
+                
+                max_row = ws.max_row
+                max_col = ws.max_column
+                if max_row > 1:
+                    table_range = f"A1:{get_column_letter(max_col)}{max_row}"
+                    excel_table = Table(displayName=f"DataTable{tab_index}", ref=table_range)
+                    
+                    style = TableStyleInfo(
+                        name="TableStyleMedium2",
+                        showFirstColumn=False,
+                        showLastColumn=False,
+                        showRowStripes=True,
+                        showColumnStripes=False
+                    )
+                    excel_table.tableStyleInfo = style
+                    ws.add_table(excel_table)
+                
+                # התאם רוחב עמודות
+                for col in range(1, max_col + 1):
+                    ws.column_dimensions[get_column_letter(col)].width = 15
+                
+                # עצב את עמודת התאריך
+                for row in range(2, max_row + 1):
+                    date_cell = ws.cell(row=row, column=1)
+                    if date_cell.value and isinstance(date_cell.value, datetime):
+                        date_cell.number_format = 'DD/MM/YYYY'
+                
+                # צור גרף קווי
+                if max_row > 1:
+                    chart = LineChart()
+                    chart.title = f"גרף משקלים - {exercise_name}"
+                    chart.style = 10
+                    chart.y_axis.title = None
+                    chart.x_axis.title = None
+                    chart.legend = None
+                    
+                    data = Reference(ws, min_col=2, min_row=2, max_col=2, max_row=max_row)
+                    dates = Reference(ws, min_col=1, min_row=2, max_row=max_row)
+                    
+                    chart.add_data(data, titles_from_data=False)
+                    chart.set_categories(dates)
+                    
+                    if len(chart.series) > 0:
+                        series = chart.series[0]
+                        series.smooth = False
+                        
+                        from openpyxl.chart.marker import Marker
+                        from openpyxl.drawing.line import LineProperties
+                        
+                        line = LineProperties()
+                        line.solidFill = "2196F3"
+                        line.width = 25000
+                        series.graphicalProperties.line = line
+                        
+                        marker = Marker(symbol='circle', size=5)
+                        series.marker = marker
+                    
+                    chart.width = 20
+                    chart.height = 12
+                    
+                    ws.add_chart(chart, f"A{max_row + 3}")
+            
+            # שמור את הקובץ
+            wb.save(filename)
+            
+            self.statusBar().showMessage(f"נשמר בהצלחה: {filename}", 3000)
+            QMessageBox.information(self, "הצלחה", f"הקובץ נשמר בהצלחה:\n{filename}\n\nיוצאו {self.tab_widget.count()} תרגילים")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "שגיאה", f"שגיאה בשמירת הקובץ:\n{str(e)}")
     
     def _undo_current_tab(self):
         """ביטול הפעולה האחרונה בעמוד הנוכחי"""
