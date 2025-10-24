@@ -5,49 +5,88 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from openpyxl import Workbook
-from openpyxl.chart import LineChart, Reference
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
+# Optional dependencies: import lazily and tolerate absence so module can be
+# imported in environments missing optional packages (e.g., CI/test).
+try:
+    from openpyxl import Workbook
+    from openpyxl.chart import LineChart, Reference
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    _HAS_OPENPYXL = True
+except Exception:
+    Workbook = None  # type: ignore
+    LineChart = Reference = None  # type: ignore
+    Alignment = Font = PatternFill = None  # type: ignore
+    get_column_letter = None  # type: ignore
+    _HAS_OPENPYXL = False
 
+# Matplotlib / Qt canvas may be optional in headless/test environments.
 os.environ.setdefault('QT_API', 'pyside6')
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-
-os.environ["QT_API"] = "pyside6"
-import matplotlib.dates as mdates
-from PySide6.QtCore import QDate, QEvent, QSize, Qt
-from PySide6.QtGui import (
-    QAction,
-    QDoubleValidator,
-    QIntValidator,
-    QKeySequence,
-    QShortcut,
-    QValidator,
-)
-from PySide6.QtWidgets import (
-    QApplication,
-    QCalendarWidget,
-    QDialog,
-    QDialogButtonBox,
-    QGridLayout,
-    QHBoxLayout,
-    QInputDialog,
-    QLabel,
-    QLineEdit,
-    QMainWindow,
-    QMenu,
-    QMessageBox,
-    QPushButton,
-    QSizePolicy,
-    QStatusBar,
-    QTableWidget,
-    QTableWidgetItem,
-    QTabWidget,
-    QToolBar,
-    QVBoxLayout,
-    QWidget,
-)
+try:
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+    from matplotlib.figure import Figure
+    import matplotlib.dates as mdates
+    _HAS_MPL = True
+except Exception:
+    FigureCanvas = None  # type: ignore
+    Figure = None  # type: ignore
+    mdates = None  # type: ignore
+    _HAS_MPL = False
+try:
+    from PySide6.QtCore import QDate, QEvent, QPointF, QRect, QRectF, QSize, Qt
+    from PySide6.QtGui import (
+        QAction,
+        QBrush,
+        QColor,
+        QDoubleValidator,
+        QFont,
+        QIcon,
+        QIntValidator,
+        QKeySequence,
+        QLinearGradient,
+        QPainter,
+        QPen,
+        QPixmap,
+        QShortcut,
+        QValidator,
+    )
+    from PySide6.QtWidgets import (
+        QApplication,
+        QButtonGroup,
+        QCalendarWidget,
+        QDialog,
+        QDialogButtonBox,
+        QFileDialog,
+        QFrame,
+        QGridLayout,
+        QHBoxLayout,
+        QInputDialog,
+        QLabel,
+        QLineEdit,
+        QListWidget,
+        QListWidgetItem,
+        QMainWindow,
+        QMenu,
+        QMessageBox,
+        QPushButton,
+        QRadioButton,
+        QSizePolicy,
+        QStatusBar,
+        QTableWidget,
+        QTableWidgetItem,
+        QTabWidget,
+        QToolBar,
+        QVBoxLayout,
+        QWidget,
+    )
+    _HAS_QT = True
+except Exception:
+    # If PySide6 isn't installed, set a flag and define minimal stand-ins for type checkers.
+    _HAS_QT = False
+    # Define placeholders so static analysis of the file can continue in limited fashion.
+    QDate = QEvent = QSize = Qt = object
+    QAction = QColor = QDoubleValidator = QIntValidator = QKeySequence = QShortcut = QValidator = object
+    QApplication = QButtonGroup = QCalendarWidget = QDialog = QDialogButtonBox = QFileDialog = QFrame = QGridLayout = QHBoxLayout = QInputDialog = QLabel = QLineEdit = QListWidget = QListWidgetItem = QMainWindow = QMenu = QMessageBox = QPushButton = QRadioButton = QSizePolicy = QStatusBar = QTableWidget = QTableWidgetItem = QTabWidget = QToolBar = QVBoxLayout = QWidget = object
 
 
 # טבלה שמאזנת עמודות לרוחב שווה בכל שינוי גודל
@@ -71,9 +110,10 @@ class EqualWidthTable(QTableWidget):
 
 
 class ExerciseTab(QWidget):
-    def __init__(self, exercise_name: str):
+    def __init__(self, exercise_name: str, profile_name: str = None):
         super().__init__()
         self.exercise_name = exercise_name
+        self.profile_name = profile_name or "ברירת מחדל"  # פרופיל ברירת מחדל אם לא צוין
         self.setContentsMargins(5, 5, 5, 5)
         self._has_unsaved_changes = False
         # מערכת Undo/Redo
@@ -90,6 +130,12 @@ class ExerciseTab(QWidget):
         self._has_unsaved_changes = False
         # שמירת מצב ראשוני
         self._save_state_to_undo()
+
+    def _show_status(self, message: str, duration: int = 2000):
+        """הצגת הודעה בסטטוס בר"""
+        window = self.window()
+        if isinstance(window, QMainWindow) and window.statusBar():
+            window.statusBar().showMessage(message, duration)
 
     def _init_ui(self):
         layout = QVBoxLayout()
@@ -221,7 +267,7 @@ class ExerciseTab(QWidget):
             }
         """
         
-        self.total_exercises_label = QLabel('<div style="text-align: center;">אימונים<br><span style="font-size: 24pt;">0</span><br><span style="font-size: 32pt;">💪</span></div>')
+        self.total_exercises_label = QLabel('<div style="text-align: center;">תרגילים<br><span style="font-size: 24pt;">0</span><br><span style="font-size: 32pt;">💪</span></div>')
         self.total_exercises_label.setStyleSheet(exercises_style)
         self.total_exercises_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.total_exercises_label.setMinimumWidth(300)
@@ -242,21 +288,45 @@ class ExerciseTab(QWidget):
         self.avg_weight_label.setMaximumWidth(300)
         self.avg_weight_label.setTextFormat(Qt.TextFormat.RichText)
         
+        # קופסה סגולה לרמת התקדמות
+        progress_style = """
+            QLabel {
+                font-size: 16pt;
+                font-weight: bold;
+                color: white;
+                padding: 15px 25px;
+                border-radius: 8px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #9C27B0, stop:1 #7B1FA2);
+                border: 2px solid #6A1B9A;
+            }
+        """
+        
+        self.progress_label = QLabel('<div style="text-align: center;">רמה<br><span style="font-size: 20pt;">טירון</span><br><span style="font-size: 32pt;">🌱</span></div>')
+        self.progress_label.setStyleSheet(progress_style)
+        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.progress_label.setMinimumWidth(300)
+        self.progress_label.setMaximumWidth(300)
+        self.progress_label.setTextFormat(Qt.TextFormat.RichText)
+        
         summary_layout.addWidget(self.total_exercises_label)
         summary_layout.addWidget(self.total_weight_label)
         summary_layout.addWidget(self.avg_weight_label)
+        summary_layout.addWidget(self.progress_label)
         
-        # הוספת שדות לטופס ללא תוויות
-        input_layout = QVBoxLayout()
-        fields = [
+        # רשימת שדות קלט
+        self._inputs = [
             self.input_weight,
             self.input_sets,
             self.input_reps,
             self.input_last_reps,
         ]
         
-         # הגדרת רוחב מקסימלי לשדות הקלט
-        for field in fields:
+        # הוספת שדות לטופס ללא תוויות
+        input_layout = QVBoxLayout()
+        
+        # הגדרת רוחב מקסימלי לשדות הקלט
+        for field in self._inputs:
             field.setMaximumWidth(150)
             input_layout.addWidget(field)
         
@@ -268,13 +338,7 @@ class ExerciseTab(QWidget):
         
         form.addLayout(inputs_and_summary, 0, 0)
 
-        # טבלת נתונים עם עמודות שוות רוחב
-        self._inputs = [
-            self.input_weight,
-            self.input_sets,
-            self.input_reps,
-            self.input_last_reps,
-        ]
+        # חיבור אירועי שדות קלט
         for inp in self._inputs:
             inp.textChanged.connect(self._update_add_enabled)
             inp.returnPressed.connect(self._try_add_on_enter)
@@ -338,27 +402,22 @@ class ExerciseTab(QWidget):
         self.setLayout(layout)
 
     def _update_add_enabled(self):
-        weight_ok = self._weight_state(self.input_weight.text().strip().replace(",", ".")) == QValidator.State.Acceptable
-        sets_ok = self._int_state(self.input_sets) == QValidator.State.Acceptable
-        reps_ok = self._int_state(self.input_reps) == QValidator.State.Acceptable
-        last_reps_ok = self._int_state(self.input_last_reps) == QValidator.State.Acceptable
+        weight_ok = self._validate_input(self.input_weight, self.input_weight.text().strip().replace(",", "."))
+        sets_ok = self._validate_input(self.input_sets)
+        reps_ok = self._validate_input(self.input_reps)
+        last_reps_ok = self._validate_input(self.input_last_reps)
         self.btn_add.setEnabled(weight_ok and sets_ok and reps_ok and last_reps_ok)
 
-    def _weight_state(self, text: str) -> QValidator.State:
-        v = self.input_weight.validator()
-        if isinstance(v, QDoubleValidator):
-            res: Any = v.validate(text, 0)
-            if isinstance(res, tuple) and len(res) > 0 and isinstance(res[0], QValidator.State):
-                return res[0]
-        return QValidator.State.Invalid
-
-    def _int_state(self, widget: QLineEdit) -> QValidator.State:
+    def _validate_input(self, widget: Any, text: str = None) -> bool:
+        """בדיקת תקינות קלט עבור שדה"""
         v = widget.validator()
-        if isinstance(v, QIntValidator):
-            res: Any = v.validate(widget.text(), 0)
-            if isinstance(res, tuple) and len(res) > 0 and isinstance(res[0], QValidator.State):
-                return res[0]
-        return QValidator.State.Invalid
+        if v is None:
+            return False
+        test_text = text if text is not None else widget.text()
+        res = v.validate(test_text, 0)
+        if isinstance(res, tuple) and len(res) > 0:
+            return res[0] == QValidator.State.Acceptable
+        return False
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.KeyPress and obj in self._inputs:
@@ -381,40 +440,29 @@ class ExerciseTab(QWidget):
         total = 0
         for row in range(self.table.rowCount()):
             try:
-                # קבלת הערכים מהטבלה
-                try:
-                    weight_item = self.table.item(row, 3)
-                    sets_item = self.table.item(row, 2)
-                    reps_item = self.table.item(row, 1)
-                    last_reps_item = self.table.item(row, 0)
-                    
-                    # בדיקה מקיפה של תקינות הנתונים
-                    if not all([
-                        isinstance(item, QTableWidgetItem) and item.text()
-                        for item in [weight_item, sets_item, reps_item, last_reps_item]
-                    ]):
-                        continue
-
-                    # המרת הערכים למספרים
-                    weight_text = weight_item.text().split()[0].replace(",", ".")  # type: ignore
-                    weight = float(weight_text)
-                    sets = int(sets_item.text())  # type: ignore
-                    reps = int(reps_item.text())  # type: ignore
-                    last_reps = int(last_reps_item.text())  # type: ignore
-                    
-                    # חישוב: (סטים-1 * חזרות * משקל) + (סט אחרון * משקל)
-                    total += ((sets - 1) * reps * weight) + (last_reps * weight)
-                except (ValueError, AttributeError, IndexError):
+                items = [self.table.item(row, i) for i in [3, 2, 1, 0]]  # weight, sets, reps, last_reps
+                
+                # בדיקה מקיפה של תקינות הנתונים
+                if not all(isinstance(item, QTableWidgetItem) and item.text() for item in items):
                     continue
+
+                # המרת הערכים למספרים
+                weight = float(items[0].text().split()[0].replace(",", "."))
+                sets = int(items[1].text())
+                reps = int(items[2].text())
+                last_reps = int(items[3].text())
+                
+                # חישוב: (סטים-1 * חזרות * משקל) + (סט אחרון * משקל)
+                total += ((sets - 1) * reps * weight) + (last_reps * weight)
             except (ValueError, AttributeError, IndexError):
                 continue
         return total
 
     def _update_summary(self):
         """עדכון תוויות הסיכום"""
-        # עדכון מספר האימונים
+        # עדכון מספר התרגילים
         exercises_count = self.table.rowCount()
-        self.total_exercises_label.setText(f'<div style="text-align: center;">אימונים<br><span style="font-size: 24pt;">{exercises_count}</span><br><span style="font-size: 32pt;">💪</span></div>')
+        self.total_exercises_label.setText(f'<div style="text-align: center;">תרגילים<br><span style="font-size: 24pt;">{exercises_count}</span><br><span style="font-size: 32pt;">💪</span></div>')
         
         # עדכון סך המשקל
         total_weight = self._calculate_total_weight()
@@ -426,6 +474,76 @@ class ExerciseTab(QWidget):
             self.avg_weight_label.setText(f'<div style="text-align: center;">משקל לסט<br><span style="font-size: 24pt;">{avg_weight:,.0f} ק"ג</span><br><span style="font-size: 32pt;">📊</span></div>')
         else:
             self.avg_weight_label.setText('<div style="text-align: center;">משקל לסט<br><span style="font-size: 24pt;">0 ק"ג</span><br><span style="font-size: 32pt;">📊</span></div>')
+        
+        # עדכון רמת התקדמות
+        self._update_progress_level(exercises_count)
+    
+    def _update_progress_level(self, exercises_count):
+        """עדכון רמת התקדמות על פי מספר האימונים"""
+        # הגדרת שלבים
+        levels = [
+            (0, 10, "טירון", "🌱", 0),
+            (10, 30, "מתחיל", "🌿", 1),
+            (30, 60, "מתקדם", "🌳", 2),
+            (60, 100, "מומחה", "🏆", 3),
+            (100, float('inf'), "אגדי", "👑", 4)
+        ]
+        
+        # מציאת הרמה הנוכחית
+        current_level = levels[0]
+        for level in levels:
+            min_val, max_val, name, emoji, level_num = level
+            if min_val <= exercises_count < max_val:
+                current_level = level
+                break
+        
+        min_val, max_val, level_name, emoji, level_num = current_level
+        
+        # חישוב אחוזי התקדמות ברמה הנוכחית
+        if max_val == float('inf'):
+            progress_percent = 100
+            next_milestone = "מקסימום!"
+        else:
+            progress_in_level = exercises_count - min_val
+            level_range = max_val - min_val
+            progress_percent = (progress_in_level / level_range) * 100
+            next_milestone = f"עד {max_val}"
+        
+        # יצירת פס התקדמות ויזואלי
+        # 3 קווים מייצגים את השלבים
+        total_levels = 5
+        filled_levels = level_num
+        
+        # יצירת פס עם נקודות
+        progress_dots = ""
+        for i in range(total_levels):
+            if i < filled_levels:
+                progress_dots += "●"  # נקודה מלאה
+            elif i == filled_levels:
+                # נקודה חלקית על פי האחוז
+                if progress_percent >= 66:
+                    progress_dots += "◉"  # כמעט מלא
+                elif progress_percent >= 33:
+                    progress_dots += "◔"  # חצי
+                else:
+                    progress_dots += "○"  # ריק
+            else:
+                progress_dots += "○"  # נקודה ריקה
+            
+            if i < total_levels - 1:
+                progress_dots += "━"  # קו מחבר
+        
+        # עדכון התווית
+        progress_html = f'''
+        <div style="text-align: center;">
+            <span style="font-size: 14pt;">רמה</span><br>
+            <span style="font-size: 22pt; font-weight: bold;">{level_name}</span><br>
+            <span style="font-size: 28pt;">{emoji}</span><br>
+            <span style="font-size: 12pt;">{progress_dots}</span><br>
+            <span style="font-size: 11pt;">{exercises_count} תרגילים | {next_milestone}</span>
+        </div>
+        '''
+        self.progress_label.setText(progress_html)
 
     def add_entry(self):
         weight_raw = self.input_weight.text().strip().replace(",", ".")
@@ -434,9 +552,7 @@ class ExerciseTab(QWidget):
         last_reps_raw = self.input_last_reps.text().strip()
 
         if not (weight_raw and sets_raw and reps_raw and last_reps_raw):
-            window = self.window()
-            if isinstance(window, QMainWindow) and window.statusBar():
-                window.statusBar().showMessage("מלא את כל השדות.", 2000)
+            self._show_status("מלא את כל השדות.")
             return
             
         self._has_unsaved_changes = True
@@ -448,9 +564,7 @@ class ExerciseTab(QWidget):
             reps_val = int(reps_raw)
             last_reps_val = int(last_reps_raw)
         except ValueError:
-            window = self.window()
-            if isinstance(window, QMainWindow) and window.statusBar():
-                window.statusBar().showMessage("קלט לא תקין.", 2000)
+            self._show_status("קלט לא תקין.")
             return
 
         # תאריך
@@ -464,25 +578,22 @@ class ExerciseTab(QWidget):
         self.table.insertRow(row)
 
         data = [last_reps_val, reps_val, sets_val, f"{weight_str} Kg", date_str]
-        aligns = [Qt.AlignmentFlag.AlignHCenter] * 5  # כל העמודות ממורכזות
         
         for col, value in enumerate(data):
             item = QTableWidgetItem(str(value))
-            item.setTextAlignment(aligns[col] | Qt.AlignmentFlag.AlignVCenter)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row, col, item)
         
         # עדכון הסיכום
         self._update_summary()
 
         # ניקוי שדות
-        for field in [self.input_weight, self.input_sets, self.input_reps, self.input_last_reps]:
+        for field in self._inputs:
             field.clear()
         self.input_weight.setFocus()
         self._update_add_enabled()
         self.btn_pop.setEnabled(True)
-        window = self.window()
-        if isinstance(window, QMainWindow) and window.statusBar():
-            window.statusBar().showMessage(f"התווסף: {weight_str} Kg, {sets_val}x{reps_val}", 2000)
+        self._show_status(f"התווסף: {weight_str} Kg, {sets_val}x{reps_val}")
 
     def pop_last(self):
         rows = self.table.rowCount()
@@ -492,10 +603,8 @@ class ExerciseTab(QWidget):
             self.table.removeRow(rows - 1)
             self.btn_pop.setEnabled(self.table.rowCount() > 0)
             self._has_unsaved_changes = True
-            self._update_summary()  # עדכון הסיכום
-            window = self.window()
-            if isinstance(window, QMainWindow) and window.statusBar():
-                window.statusBar().showMessage("נמחק האחרון.", 2000)
+            self._update_summary()
+            self._show_status("נמחק האחרון.")
 
     def plot_selected_exercise(self):
         # הסתר את האזורים שלא נחוצים בתצוגת גרף
@@ -511,24 +620,17 @@ class ExerciseTab(QWidget):
         # אסוף את כל הנתונים מהטבלה
         points: list[tuple[datetime, float]] = []
         for r in range(self.table.rowCount()):
-            date_item = self.table.item(r, 4)  # תאריך עכשיו בעמודה האחרונה
-            weight_item = self.table.item(r, 3)  # משקל עכשיו בעמודה הרביעית
+            date_item = self.table.item(r, 4)
+            weight_item = self.table.item(r, 3)
             try:
-                wtxt = weight_item.text().split()[0] if weight_item is not None else "0"
-                wval = float(wtxt.replace(",", "."))
-            except Exception:
-                wval = 0.0
-            try:
-                dstr = date_item.text().strip() if date_item is not None else ""
-                dval = datetime.strptime(dstr, "%d/%m/%Y")
-            except Exception:
-                dval = datetime.now()
-            points.append((dval, wval))
+                wval = float(weight_item.text().split()[0].replace(",", ".")) if weight_item else 0.0
+                dval = datetime.strptime(date_item.text().strip(), "%d/%m/%Y") if date_item else datetime.now()
+                points.append((dval, wval))
+            except (ValueError, AttributeError):
+                continue
 
         if not points:
-            window = self.window()
-            if isinstance(window, QMainWindow) and window.statusBar():
-                window.statusBar().showMessage("אין רשומות להצגה", 2000)
+            self._show_status("אין רשומות להצגה")
             return
 
         # מיין לפי תאריך
@@ -544,17 +646,38 @@ class ExerciseTab(QWidget):
         ax.set_facecolor('#f8f9fa')
         
         dates = mdates.date2num(xs)
-        ax.plot(dates, ys, '-o', color='#2196F3', linewidth=2, markersize=8, 
-                markerfacecolor='white', markeredgecolor='#2196F3', markeredgewidth=2)
+        
+        # ציור הקו הבסיסי
+        ax.plot(dates, ys, '-', color='#2196F3', linewidth=3, alpha=0.7)
+        
+        # הוספת נקודות צבעוניות לפי עלייה/ירידה/ללא שינוי
+        for i, y in enumerate(ys):
+            if i == 0:
+                color, size = '#2196F3', 120
+            elif y > ys[i-1]:
+                color, size = '#4CAF50', 140
+            elif y < ys[i-1]:
+                color, size = '#f44336', 140
+            else:
+                color, size = '#FF9800', 120
+            
+            ax.scatter(dates[i], y, s=size, c=color, marker='o', 
+                      edgecolors='white', linewidths=2.5, zorder=5, alpha=0.9)
         
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m/%Y'))
         self.figure.autofmt_xdate(rotation=30)
         
-        # שימוש בסימן LRM (Left-to-Right Mark) לסידור הטקסט
+        # כותרת מעוצבת וגדולה יותר - מסגרת קטנה יותר
         LRM = '\u200E'
         title = f"גרף משקלים - {self.exercise_name}"
-        ax.set_title(f"{LRM}{title[::-1]}", fontsize=12, pad=15)  # הופך את סדר האותיות
+        ax.set_title(f"{LRM}{title[::-1]}", 
+                    fontsize=18,           # גודל גדול יותר
+                    fontweight='bold',     # מודגש
+                    pad=20,                # ריווח מהגרף
+                    color='#1976D2',       # צבע כחול כהה
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='#E3F2FD', 
+                             edgecolor='#2196F3', linewidth=1.5))  # מסגרת קטנה יותר
         
         # הוספת kg למספרים על ציר Y
         from matplotlib.ticker import FuncFormatter
@@ -562,46 +685,53 @@ class ExerciseTab(QWidget):
             return f'{int(x)} kg'
         ax.yaxis.set_major_formatter(FuncFormatter(kg_formatter))
         
-        # הגדרת רשת עדינה
-        ax.grid(True, linestyle='--', alpha=0.3)
+        # הגדרת רשת עדינה ויפה יותר
+        ax.grid(True, linestyle='--', alpha=0.4, color='#BDBDBD', linewidth=0.8)
+        ax.grid(True, which='minor', linestyle=':', alpha=0.2, color='#E0E0E0')
         ax.set_axisbelow(True)  # הרשת מאחורי הנתונים
         
-        # עיצוב שולי הגרף
-        for spine in ax.spines.values():
-            spine.set_color('#cccccc')
+        # עיצוב שולי הגרף - מסגרת מעוצבת יותר
+        spine_colors = {
+            'top': '#64B5F6',
+            'bottom': '#1976D2', 
+            'left': '#1976D2',
+            'right': '#64B5F6'
+        }
+        
+        for position, spine in ax.spines.items():
+            spine.set_color(spine_colors.get(position, '#90A4AE'))
+            spine.set_linewidth(2.5)
+            spine.set_capstyle('round')
             
         # התאמת צבע וגודל תוויות הצירים
-        ax.tick_params(axis='both', colors='#666666', labelsize=9)
+        ax.tick_params(axis='both', colors='#424242', labelsize=10, width=1.5, length=6)
+        ax.tick_params(axis='x', rotation=0)  # תיקון זווית
+        
+        # הוספת צל עדין לאזור הגרף
+        ax.set_facecolor('#FAFAFA')
+        
+        # שיפור המרווחים
+        self.figure.tight_layout(pad=2.0)
         
         self.canvas.draw()
         self.canvas.show()
 
     def save_state(self):
-        state = {
-            "rows": []
-        }
-        for r in range(self.table.rowCount()):
-            row_data = []
-            for c in range(self.table.columnCount()):
-                item = self.table.item(r, c)
-                row_data.append(item.text() if item is not None else "")
-            state["rows"].append(row_data)
+        state = {"rows": [[self.table.item(r, c).text() if self.table.item(r, c) else "" 
+                          for c in range(self.table.columnCount())] 
+                         for r in range(self.table.rowCount())]}
 
-        path = Path.cwd() / f"exercise_state_{self.exercise_name}.json"
+        path = Path.cwd() / f"exercise_{self.profile_name}_{self.exercise_name}.json"
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False, indent=2)
-            self._has_unsaved_changes = False  # מאפס את דגל השינויים אחרי שמירה
-            window = self.window()
-            if isinstance(window, QMainWindow) and window.statusBar():
-                window.statusBar().showMessage(f"נשמר ל־{path}", 2000)
+            self._has_unsaved_changes = False
+            self._show_status(f"נשמר ל־{path}")
         except Exception as e:
-            window = self.window()
-            if isinstance(window, QMainWindow) and window.statusBar():
-                window.statusBar().showMessage(f"שגיאה בשמירה: {e}", 2000)
+            self._show_status(f"שגיאה בשמירה: {e}")
 
     def load_state(self):
-        path = Path.cwd() / f"exercise_state_{self.exercise_name}.json"
+        path = Path.cwd() / f"exercise_{self.profile_name}_{self.exercise_name}.json"
         if not path.exists():
             return
         try:
@@ -616,15 +746,10 @@ class ExerciseTab(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
                     self.table.setItem(r, c, item)
             self.btn_pop.setEnabled(self.table.rowCount() > 0)
-            # עדכון הסיכום (הקופסאות) אחרי טעינת הנתונים
             self._update_summary()
-            window = self.window()
-            if isinstance(window, QMainWindow) and window.statusBar():
-                window.statusBar().showMessage(f"טען מצב מ־{path}", 2000)
+            self._show_status(f"טען מצב מ־{path}")
         except Exception as e:
-            window = self.window()
-            if isinstance(window, QMainWindow) and window.statusBar():
-                window.statusBar().showMessage(f"שגיאה בטעינה: {e}", 2000)
+            self._show_status(f"שגיאה בטעינה: {e}")
 
     def _show_table_context_menu(self, pos):
         menu = QMenu()
@@ -665,51 +790,42 @@ class ExerciseTab(QWidget):
     def delete_selected_row(self):
         """מחיקת השורה הנבחרת"""
         selected_rows = {idx.row() for idx in self.table.selectedIndexes()}
-        if len(selected_rows) == 1:
-            # שמירה למחסנית Undo לפני השינוי
-            self._save_state_to_undo()
-            row = selected_rows.pop()
-            self.table.removeRow(row)
-            self._has_unsaved_changes = True
-            self.btn_pop.setEnabled(self.table.rowCount() > 0)
-            self._update_summary()
-            window = self.window()
-            if isinstance(window, QMainWindow) and window.statusBar():
-                window.statusBar().showMessage("השורה נמחקה.", 2000)
+        if len(selected_rows) != 1:
+            return
+            
+        self._save_state_to_undo()
+        self.table.removeRow(selected_rows.pop())
+        self._has_unsaved_changes = True
+        self.btn_pop.setEnabled(self.table.rowCount() > 0)
+        self._update_summary()
+        self._show_status("השורה נמחקה.")
     
     def duplicate_selected_row(self):
         """שכפול השורה הנבחרת"""
         selected_rows = {idx.row() for idx in self.table.selectedIndexes()}
-        if len(selected_rows) == 1:
-            row = selected_rows.pop()
+        if len(selected_rows) != 1:
+            return
             
-            # שמירה למחסנית Undo לפני השינוי
-            self._save_state_to_undo()
-            
-            # שכפול הנתונים מהשורה הנבחרת
-            row_data = []
-            for col in range(self.table.columnCount()):
-                item = self.table.item(row, col)
-                if item:
-                    row_data.append(item.text())
-                else:
-                    row_data.append("")
-            
-            # הוספת שורה חדשה עם הנתונים המשוכפלים
-            new_row = self.table.rowCount()
-            self.table.insertRow(new_row)
-            
-            for col, value in enumerate(row_data):
-                new_item = QTableWidgetItem(value)
-                new_item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-                self.table.setItem(new_row, col, new_item)
-            
-            self._has_unsaved_changes = True
-            self.btn_pop.setEnabled(True)
-            self._update_summary()
-            window = self.window()
-            if isinstance(window, QMainWindow) and window.statusBar():
-                window.statusBar().showMessage("השורה שוכפלה.", 2000)
+        row = selected_rows.pop()
+        self._save_state_to_undo()
+        
+        # שכפול הנתונים מהשורה הנבחרת
+        row_data = [self.table.item(row, col).text() if self.table.item(row, col) else "" 
+                   for col in range(self.table.columnCount())]
+        
+        # הוספת שורה חדשה עם הנתונים המשוכפלים
+        new_row = self.table.rowCount()
+        self.table.insertRow(new_row)
+        
+        for col, value in enumerate(row_data):
+            new_item = QTableWidgetItem(value)
+            new_item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(new_row, col, new_item)
+        
+        self._has_unsaved_changes = True
+        self.btn_pop.setEnabled(True)
+        self._update_summary()
+        self._show_status("השורה שוכפלה.")
     
     def _save_state_to_undo(self):
         """שמירת המצב הנוכחי למחסנית ה-Undo לפני ביצוע פעולה"""
@@ -730,14 +846,9 @@ class ExerciseTab(QWidget):
     
     def _get_current_table_state(self):
         """קבלת המצב הנוכחי של הטבלה"""
-        state = []
-        for r in range(self.table.rowCount()):
-            row_data = []
-            for c in range(self.table.columnCount()):
-                item = self.table.item(r, c)
-                row_data.append(item.text() if item is not None else "")
-            state.append(row_data)
-        return state
+        return [[self.table.item(r, c).text() if self.table.item(r, c) else "" 
+                for c in range(self.table.columnCount())] 
+               for r in range(self.table.rowCount())]
     
     def _restore_table_state(self, state):
         """שחזור מצב הטבלה"""
@@ -759,9 +870,7 @@ class ExerciseTab(QWidget):
     def undo(self):
         """ביטול הפעולה האחרונה"""
         if len(self._undo_stack) < 1:
-            window = self.window()
-            if isinstance(window, QMainWindow) and window.statusBar():
-                window.statusBar().showMessage("אין מה לבטל", 2000)
+            self._show_status("אין מה לבטל")
             return
         
         # שמירת המצב הנוכחי ל-Redo (רק אם עדיין לא שמרנו אותו)
@@ -775,17 +884,12 @@ class ExerciseTab(QWidget):
         previous_state = self._undo_stack.pop()
         self._restore_table_state(previous_state)
         self._has_unsaved_changes = True
-        
-        window = self.window()
-        if isinstance(window, QMainWindow) and window.statusBar():
-            window.statusBar().showMessage("בוטל", 1000)
+        self._show_status("בוטל", 1000)
     
     def redo(self):
         """שחזור הפעולה שבוטלה"""
         if not self._redo_stack:
-            window = self.window()
-            if isinstance(window, QMainWindow) and window.statusBar():
-                window.statusBar().showMessage("אין מה לשחזר", 2000)
+            self._show_status("אין מה לשחזר")
             return
         
         # שמירת המצב הנוכחי ל-Undo
@@ -799,10 +903,7 @@ class ExerciseTab(QWidget):
         state = self._redo_stack.pop()
         self._restore_table_state(state)
         self._has_unsaved_changes = True
-        
-        window = self.window()
-        if isinstance(window, QMainWindow) and window.statusBar():
-            window.statusBar().showMessage("שוחזר", 1000)
+        self._show_status("שוחזר", 1000)
         
     def _edit_date_cell(self, row: int, column: int):
         if column != 4:  # עמודת תאריך היא 4
@@ -891,6 +992,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("מעקב משקלים")
         self.setMinimumSize(QSize(800, 600))
         self.showMaximized()  # פתיחה במסך מלא
+        
+        # הגדרת אייקון החלון
+        self._set_window_icon()
 
         # יצירת סטטוס בר
         self.setStatusBar(QStatusBar())
@@ -908,6 +1012,20 @@ class MainWindow(QMainWindow):
         # יצירת סרגל כלים
         toolbar = QToolBar()
         self.addToolBar(toolbar)
+        
+        # כפתור פרופיל בסרגל כלים
+        profile_action = QAction("👤 פרופיל", self)
+        profile_action.setShortcuts([QKeySequence("Ctrl+P"), QKeySequence("Ctrl+פ")])  # תמיכה באנגלית ועברית
+        profile_action.triggered.connect(self._show_profile_dialog)
+        toolbar.addAction(profile_action)
+        
+        # כפתור החלף פרופיל
+        switch_profile_action = QAction("🔄 החלף פרופיל", self)
+        switch_profile_action.setShortcuts([QKeySequence("Ctrl+Shift+P"), QKeySequence("Ctrl+Shift+פ")])
+        switch_profile_action.triggered.connect(self._switch_profile)
+        toolbar.addAction(switch_profile_action)
+        
+        toolbar.addSeparator()
         
         # כפתור שמירה בסרגל כלים עם קיצור מקלדת
         save_action = QAction("שמור", self)
@@ -990,6 +1108,780 @@ class MainWindow(QMainWindow):
 
         # שמירה בסגירה
         self._closing = False
+        
+        # טעינת פרטי פרופיל
+        self.current_profile_name = None  # שם הפרופיל הנוכחי
+        self._load_profile()
+    
+    def _set_window_icon(self):
+        """יצירת והגדרת אייקון מקצועי לחלון"""
+        try:
+            from PySide6.QtGui import QPixmap, QIcon, QPainter, QFont, QPen, QBrush, QLinearGradient
+            from PySide6.QtCore import Qt, QRect, QRectF, QPointF
+            
+            # יצירת פיקסמאפ בגודל גדול יותר לאיכות טובה
+            size = 128
+            pixmap = QPixmap(size, size)
+            pixmap.fill(Qt.GlobalColor.transparent)  # רקע שקוף
+            
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            
+            # יצירת רקע עם גרדיאנט
+            gradient = QLinearGradient(0, 0, size, size)
+            gradient.setColorAt(0, QColor(33, 150, 243))    # כחול בהיר #2196F3
+            gradient.setColorAt(1, QColor(25, 118, 210))    # כחול כהה #1976D2
+            
+            # ציור עיגול עם גרדיאנט
+            painter.setBrush(QBrush(gradient))
+            painter.setPen(QPen(QColor(21, 101, 192), 3))  # מסגרת כחולה כהה
+            painter.drawEllipse(QRectF(2, 2, size-4, size-4))
+            
+            # ציור משקולת מסוגננת
+            painter.setPen(QPen(QColor(255, 255, 255), 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            
+            # הבר האמצעי של המשקולת
+            bar_y = size // 2
+            bar_left = size * 0.3
+            bar_right = size * 0.7
+            painter.drawLine(int(bar_left), bar_y, int(bar_right), bar_y)
+            
+            # המשקולות משני הצדדים
+            weight_size = size * 0.15
+            
+            # משקולת שמאלית
+            painter.setBrush(QBrush(QColor(255, 255, 255)))
+            painter.setPen(QPen(QColor(224, 224, 224), 2))
+            left_rect = QRectF(bar_left - weight_size, bar_y - weight_size, weight_size * 2, weight_size * 2)
+            painter.drawEllipse(left_rect)
+            
+            # משקולת ימנית
+            right_rect = QRectF(bar_right - weight_size, bar_y - weight_size, weight_size * 2, weight_size * 2)
+            painter.drawEllipse(right_rect)
+            
+            # הוספת נקודות דקורטיביות על המשקולות
+            painter.setPen(QPen(QColor(33, 150, 243), 2))
+            for rect in [left_rect, right_rect]:
+                center_x = rect.center().x()
+                center_y = rect.center().y()
+                # שלוש נקודות במרכז כל משקולת
+                painter.drawPoint(QPointF(center_x, center_y - 5))
+                painter.drawPoint(QPointF(center_x, center_y))
+                painter.drawPoint(QPointF(center_x, center_y + 5))
+            
+            painter.end()
+            
+            # הגדרת האייקון
+            icon = QIcon(pixmap)
+            self.setWindowIcon(icon)
+            
+            # שמירת האייקון לקובץ (אופציונלי - לשימוש עתידי)
+            try:
+                icon_path = Path.cwd() / "app_icon.png"
+                pixmap.save(str(icon_path), "PNG")
+            except Exception:
+                pass
+                
+        except Exception:
+            pass  # אם נכשל, פשוט לא יהיה אייקון
+
+    def _load_profile(self):
+        """טעינת פרטי הפרופיל מקובץ"""
+        # אם current_profile_name לא מוגדר (התחלת התוכנית),
+        # נטען את הפרופיל הפעיל האחרון
+        load_from_active_file = False
+        if not hasattr(self, 'current_profile_name'):
+            load_from_active_file = True
+            self.current_profile_name = None
+        elif self.current_profile_name is None:
+            load_from_active_file = True
+            
+        if load_from_active_file:
+            active_profile_path = Path.cwd() / "active_profile.json"
+            if active_profile_path.exists():
+                try:
+                    with open(active_profile_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        self.current_profile_name = data.get("active_profile")
+                except Exception:
+                    pass
+        
+        # אם אין פרופיל פעיל, ננסה לטעון את הפרופיל הישן (user_profile.json)
+        if not self.current_profile_name:
+            old_profile_path = Path.cwd() / "user_profile.json"
+            if old_profile_path.exists():
+                self.current_profile_name = "פרופיל ראשי"
+                # העברת הפרופיל הישן לפורמט החדש
+                try:
+                    with open(old_profile_path, "r", encoding="utf-8") as f:
+                        old_data = json.load(f)
+                        if old_data.get("name"):  # אם יש נתונים בפרופיל הישן
+                            self._save_profile(old_data, "פרופיל ראשי")
+                except Exception:
+                    pass
+        
+        # איפוס נתוני הפרופיל - חשוב! כדי שלא יישארו ערכים מהפרופיל הקודם
+        self.profile_data = {
+            "name": "",
+            "height": "",
+            "weight": "",
+            "age": "",
+            "gender": ""
+        }
+        
+        # טעינת נתוני הפרופיל הנוכחי מהקובץ שלו
+        if self.current_profile_name:
+            profile_path = Path.cwd() / f"profile_{self.current_profile_name}.json"
+            if profile_path.exists():
+                try:
+                    with open(profile_path, "r", encoding="utf-8") as f:
+                        loaded_data = json.load(f)
+                        # עדכון רק השדות שקיימים בקובץ
+                        self.profile_data.update(loaded_data)
+                except Exception:
+                    pass
+            
+            # עדכון שם הפרופיל בכותרת החלון
+            self.setWindowTitle(f"מעקב אימונים - {self.current_profile_name}")
+        else:
+            self.setWindowTitle("מעקב אימונים")
+
+    def _save_profile(self, profile_data, profile_name=None):
+        """שמירת פרטי הפרופיל לקובץ"""
+        if profile_name is None:
+            profile_name = self.current_profile_name
+        
+        if not profile_name:
+            QMessageBox.warning(self, "שגיאה", "לא נבחר פרופיל")
+            return
+            
+        profile_path = Path.cwd() / f"profile_{profile_name}.json"
+        try:
+            with open(profile_path, "w", encoding="utf-8") as f:
+                json.dump(profile_data, f, ensure_ascii=False, indent=2)
+            self.profile_data = profile_data
+            self.current_profile_name = profile_name
+            
+            # שמירת הפרופיל הפעיל
+            active_profile_path = Path.cwd() / "active_profile.json"
+            with open(active_profile_path, "w", encoding="utf-8") as f:
+                json.dump({"active_profile": profile_name}, f, ensure_ascii=False, indent=2)
+            
+            self.setWindowTitle(f"מעקב אימונים - {profile_name}")
+            self.statusBar().showMessage("פרטי הפרופיל נשמרו בהצלחה", 2000)
+        except Exception as e:
+            QMessageBox.warning(self, "שגיאה", f"שגיאה בשמירת הפרופיל: {e}")
+    
+    def _get_all_profiles(self):
+        """קבלת רשימת כל הפרופילים"""
+        profiles = []
+        for file in Path.cwd().glob("profile_*.json"):
+            profile_name = file.stem.replace("profile_", "")
+            profiles.append(profile_name)
+        return sorted(profiles)
+    
+    def _switch_profile(self):
+        """החלפת פרופיל"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("החלף פרופיל")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        
+        # תווית כותרת
+        title_label = QLabel("🔄 בחר פרופיל או צור חדש")
+        title_label.setStyleSheet("font-size: 16pt; font-weight: bold; color: #2196F3; padding: 10px;")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # רשימת פרופילים קיימים
+        profiles = self._get_all_profiles()
+        
+        if profiles:
+            profiles_label = QLabel("פרופילים קיימים:")
+            profiles_label.setStyleSheet("font-weight: bold; font-size: 12pt;")
+            layout.addWidget(profiles_label)
+            
+            profiles_list = QListWidget()
+            profiles_list.setStyleSheet("""
+                QListWidget {
+                    border: 2px solid #2196F3;
+                    border-radius: 5px;
+                    padding: 5px;
+                    font-size: 11pt;
+                }
+                QListWidget::item {
+                    padding: 8px;
+                    border-radius: 3px;
+                }
+                QListWidget::item:selected {
+                    background-color: #2196F3;
+                    color: white;
+                }
+                QListWidget::item:hover {
+                    background-color: #E3F2FD;
+                }
+            """)
+            
+            for profile in profiles:
+                item = QListWidgetItem(f"👤 {profile}")
+                if profile == self.current_profile_name:
+                    item.setText(f"👤 {profile} (פעיל)")
+                    item.setForeground(QColor("#4CAF50"))
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                profiles_list.addItem(item)
+            
+            profiles_list.setMaximumHeight(200)
+            layout.addWidget(profiles_list)
+            
+            # כפתור טעינת פרופיל
+            load_button = QPushButton("✅ טען פרופיל נבחר")
+            load_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    padding: 10px;
+                    font-size: 12pt;
+                    font-weight: bold;
+                    border-radius: 5px;
+                }
+                QPushButton:hover {
+                    background-color: #45a049;
+                }
+            """)
+            
+            def load_selected_profile():
+                current_item = profiles_list.currentItem()
+                if current_item:
+                    profile_text = current_item.text()
+                    # הסרת האימוג'י וה"(פעיל)" אם קיים
+                    profile_name = profile_text.replace("👤 ", "").replace(" (פעיל)", "").strip()
+                    if profile_name != self.current_profile_name:
+                        # בדיקה אם יש שינויים שלא נשמרו
+                        has_unsaved = False
+                        for i in range(self.tab_widget.count()):
+                            tab = self.tab_widget.widget(i)
+                            if isinstance(tab, ExerciseTab) and tab._has_unsaved_changes:
+                                has_unsaved = True
+                                break
+                        
+                        # אם יש שינויים, שאל את המשתמש
+                        if has_unsaved:
+                            reply = QMessageBox.question(
+                                dialog,
+                                "שינויים לא נשמרו",
+                                f"⚠️ יש שינויים שלא נשמרו בפרופיל הנוכחי!\n\nהאם ברצונך לשמור לפני ההחלפה לפרופיל '{profile_name}'?",
+                                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                                QMessageBox.StandardButton.Save
+                            )
+                            
+                            if reply == QMessageBox.StandardButton.Cancel:
+                                return  # ביטול ההחלפה
+                            elif reply == QMessageBox.StandardButton.Save:
+                                # שמירת כל הטאבים עם שינויים
+                                for i in range(self.tab_widget.count()):
+                                    tab = self.tab_widget.widget(i)
+                                    if isinstance(tab, ExerciseTab) and tab._has_unsaved_changes:
+                                        try:
+                                            tab.save_state()
+                                        except Exception as e:
+                                            QMessageBox.warning(dialog, "שגיאה בשמירה", f"שגיאה בשמירת {tab.exercise_name}: {e}")
+                                            return
+                        
+                        # עדכון הפרופיל הנוכחי
+                        self.current_profile_name = profile_name
+                        
+                        # שמירת הפרופיל הפעיל לקובץ
+                        try:
+                            active_profile_path = Path.cwd() / "active_profile.json"
+                            with open(active_profile_path, "w", encoding="utf-8") as f:
+                                json.dump({"active_profile": profile_name}, f, ensure_ascii=False, indent=2)
+                        except Exception:
+                            pass
+                        
+                        # טעינת נתוני הפרופיל
+                        self._load_profile()
+                        # טעינה מחדש של התרגילים
+                        self._reload_exercises()
+                        
+                        QMessageBox.information(dialog, "הצלחה", f"הפרופיל '{profile_name}' נטען בהצלחה!")
+                        dialog.accept()
+                    else:
+                        QMessageBox.information(dialog, "מידע", "פרופיל זה כבר פעיל")
+                else:
+                    QMessageBox.warning(dialog, "שגיאה", "נא לבחור פרופיל מהרשימה")
+            
+            load_button.clicked.connect(load_selected_profile)
+            layout.addWidget(load_button)
+            
+            # כפתור מחיקת פרופיל
+            delete_button = QPushButton("🗑️ מחק פרופיל נבחר")
+            delete_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #f44336;
+                    color: white;
+                    padding: 10px;
+                    font-size: 12pt;
+                    font-weight: bold;
+                    border-radius: 5px;
+                }
+                QPushButton:hover {
+                    background-color: #d32f2f;
+                }
+            """)
+            
+            def delete_selected_profile():
+                current_item = profiles_list.currentItem()
+                if not current_item:
+                    QMessageBox.warning(dialog, "שגיאה", "נא לבחור פרופיל מהרשימה")
+                    return
+                
+                profile_text = current_item.text()
+                profile_name = profile_text.replace("👤 ", "").replace(" (פעיל)", "").strip()
+                
+                # אם זה הפרופיל הפעיל, לא ניתן למחוק
+                if profile_name == self.current_profile_name:
+                    QMessageBox.warning(dialog, "שגיאה", "לא ניתן למחוק את הפרופיל הפעיל הנוכחי.\nנא להחליף לפרופיל אחר לפני המחיקה.")
+                    return
+                
+                # אישור מחיקה
+                reply = QMessageBox.question(
+                    dialog,
+                    "אישור מחיקה",
+                    f"האם אתה בטוח שברצונך למחוק את הפרופיל '{profile_name}'?\n\n⚠️ פעולה זו תמחק:\n• את פרטי הפרופיל\n• את כל נתוני התרגילים של הפרופיל\n\nהפעולה היא בלתי הפיכה!",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                
+                if reply == QMessageBox.StandardButton.Yes:
+                    try:
+                        # מחיקת קובץ הפרופיל
+                        profile_path = Path.cwd() / f"profile_{profile_name}.json"
+                        if profile_path.exists():
+                            os.remove(profile_path)
+                        
+                        # מחיקת כל קבצי התרגילים של הפרופיל
+                        for exercise_file in Path.cwd().glob(f"exercise_{profile_name}_*.json"):
+                            try:
+                                os.remove(exercise_file)
+                            except Exception:
+                                pass
+                        
+                        # הסרת הפרופיל מהרשימה
+                        row = profiles_list.row(current_item)
+                        profiles_list.takeItem(row)
+                        
+                        QMessageBox.information(dialog, "הצלחה", f"הפרופיל '{profile_name}' נמחק בהצלחה!")
+                        
+                        # אם אין יותר פרופילים, נסגור את הדיאלוג
+                        if profiles_list.count() == 0:
+                            QMessageBox.information(dialog, "מידע", "כל הפרופילים נמחקו.\nתוכל ליצור פרופיל חדש למטה.")
+                    except Exception as e:
+                        QMessageBox.warning(dialog, "שגיאה", f"שגיאה במחיקת הפרופיל: {e}")
+            
+            delete_button.clicked.connect(delete_selected_profile)
+            layout.addWidget(delete_button)
+            
+            # מפריד
+            separator = QFrame()
+            separator.setFrameShape(QFrame.Shape.HLine)
+            separator.setStyleSheet("color: #ccc;")
+            layout.addWidget(separator)
+        
+        # יצירת פרופיל חדש
+        new_profile_label = QLabel("צור פרופיל חדש:")
+        new_profile_label.setStyleSheet("font-weight: bold; font-size: 12pt;")
+        layout.addWidget(new_profile_label)
+        
+        name_input = QLineEdit()
+        name_input.setPlaceholderText("הכנס שם לפרופיל החדש")
+        name_input.setStyleSheet("""
+            QLineEdit {
+                padding: 8px;
+                font-size: 11pt;
+                border: 2px solid #2196F3;
+                border-radius: 5px;
+            }
+        """)
+        layout.addWidget(name_input)
+        
+        create_button = QPushButton("➕ צור פרופיל חדש")
+        create_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                padding: 10px;
+                font-size: 12pt;
+                font-weight: bold;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        
+        def create_new_profile():
+            new_name = name_input.text().strip()
+            if not new_name:
+                QMessageBox.warning(dialog, "שגיאה", "נא להכניס שם לפרופיל")
+                return
+            
+            if new_name in profiles:
+                QMessageBox.warning(dialog, "שגיאה", "פרופיל בשם זה כבר קיים")
+                return
+            
+            # בדיקה אם יש שינויים שלא נשמרו בפרופיל הנוכחי
+            has_unsaved = False
+            for i in range(self.tab_widget.count()):
+                tab = self.tab_widget.widget(i)
+                if isinstance(tab, ExerciseTab) and tab._has_unsaved_changes:
+                    has_unsaved = True
+                    break
+            
+            # אם יש שינויים, שאל את המשתמש
+            if has_unsaved:
+                reply = QMessageBox.question(
+                    dialog,
+                    "שינויים לא נשמרו",
+                    f"⚠️ יש שינויים שלא נשמרו בפרופיל הנוכחי!\n\nהאם ברצונך לשמור לפני יצירת הפרופיל החדש '{new_name}'?",
+                    QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Save
+                )
+                
+                if reply == QMessageBox.StandardButton.Cancel:
+                    return  # ביטול יצירת הפרופיל
+                elif reply == QMessageBox.StandardButton.Save:
+                    # שמירת כל הטאבים עם שינויים
+                    for i in range(self.tab_widget.count()):
+                        tab = self.tab_widget.widget(i)
+                        if isinstance(tab, ExerciseTab) and tab._has_unsaved_changes:
+                            try:
+                                tab.save_state()
+                            except Exception as e:
+                                QMessageBox.warning(dialog, "שגיאה בשמירה", f"שגיאה בשמירת {tab.exercise_name}: {e}")
+                                return
+            
+            # יצירת פרופיל ריק חדש
+            self.current_profile_name = new_name
+            empty_profile = {
+                "name": "",
+                "height": "",
+                "weight": "",
+                "age": "",
+                "gender": ""
+            }
+            self._save_profile(empty_profile, new_name)
+            self.profile_data = empty_profile
+            self._reload_exercises()  # טעינה מחדש של התרגילים (יהיה ריק)
+            
+            QMessageBox.information(dialog, "הצלחה", f"פרופיל '{new_name}' נוצר בהצלחה!\nכעת תוכל למלא את פרטי הפרופיל.")
+            dialog.accept()
+            # פתיחת חלון עריכת פרופיל
+            self._show_profile_edit()
+        
+        create_button.clicked.connect(create_new_profile)
+        layout.addWidget(create_button)
+        
+        # כפתור סגירה
+        close_button = QPushButton("סגור")
+        close_button.setStyleSheet("""
+            QPushButton {
+                background-color: #6c757d;
+                color: white;
+                padding: 8px;
+                font-size: 11pt;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #5a6268;
+            }
+        """)
+        close_button.clicked.connect(dialog.reject)
+        layout.addWidget(close_button)
+        
+        dialog.setLayout(layout)
+        dialog.exec()
+    
+    def _reload_exercises(self):
+        """טעינה מחדש של כל התרגילים לפרופיל הנוכחי"""
+        # מחיקת כל הטאבים הקיימים
+        while self.tab_widget.count() > 0:
+            self.tab_widget.removeTab(0)
+        
+        # טעינת התרגילים של הפרופיל הנוכחי
+        profile_name = self.current_profile_name or "ברירת מחדל"
+        exercise_files = list(Path.cwd().glob(f"exercise_{profile_name}_*.json"))
+        
+        if exercise_files:
+            for file in exercise_files:
+                exercise_name = file.stem.replace(f"exercise_{profile_name}_", "")
+                tab = ExerciseTab(exercise_name, profile_name)
+                self.tab_widget.addTab(tab, exercise_name)
+                tab.load_state()  # טעינת הנתונים
+        else:
+            # אם אין תרגילים, נציע ליצור אחד
+            QMessageBox.information(self, "אין תרגילים", f"לפרופיל '{profile_name}' אין עדיין תרגילים.\nתוכל להוסיף תרגיל חדש דרך התפריט 'עריכה'.")
+
+    def _show_profile_dialog(self):
+        """הצגת חלון עריכת פרופיל"""
+        # בדיקה אם יש פרופיל קיים
+        has_profile = any(self.profile_data.get(key, "") for key in ["name", "height", "weight", "age", "gender"])
+        
+        if has_profile:
+            self._show_profile_view()
+        else:
+            self._show_profile_edit()
+    
+    def _show_profile_view(self):
+        """הצגת פרופיל קיים במצב צפייה"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("פרופיל אישי")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(450)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(20)
+        
+        # תווית כותרת
+        title_label = QLabel("📋 הפרופיל שלי")
+        title_label.setStyleSheet("font-size: 18pt; font-weight: bold; color: #2196F3; padding: 15px;")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # תצוגת הפרטים
+        info_widget = QWidget()
+        info_widget.setStyleSheet("""
+            QWidget {
+                background-color: #f8f9fa;
+                border-radius: 10px;
+                padding: 20px;
+            }
+        """)
+        info_layout = QVBoxLayout(info_widget)
+        info_layout.setSpacing(15)
+        
+        # יצירת תוויות עם הפרטים
+        profile_items = [
+            ("👤 שם מלא:", self.profile_data.get("name", ""), "#E3F2FD", "#2196F3"),
+            ("📏 גובה:", f"{self.profile_data.get('height', '')} ס\"מ" if self.profile_data.get('height') else "", "#E8F5E9", "#4CAF50"),
+            ("⚖️ משקל:", f"{self.profile_data.get('weight', '')} ק\"ג" if self.profile_data.get('weight') else "", "#FFF3E0", "#FF9800"),
+            ("🎂 גיל:", self.profile_data.get("age", ""), "#FCE4EC", "#E91E63"),
+            ("👥 מין:", self.profile_data.get("gender", ""), "#F3E5F5", "#9C27B0")
+        ]
+        
+        for label_text, value, bg_color, border_color in profile_items:
+            if value:
+                # יצירת מסגרת לכל פריט
+                item_widget = QWidget()
+                item_widget.setStyleSheet(f"""
+                    QWidget {{
+                        background-color: {bg_color};
+                        border: 2px solid {border_color};
+                        border-radius: 8px;
+                        padding: 12px;
+                    }}
+                """)
+                
+                item_layout = QHBoxLayout(item_widget)
+                item_layout.setContentsMargins(10, 8, 10, 8)
+                
+                label = QLabel(label_text)
+                label.setStyleSheet(f"font-size: 13pt; font-weight: bold; color: {border_color}; border: none; background: transparent;")
+                label.setMinimumWidth(120)
+                
+                value_label = QLabel(str(value))
+                value_label.setStyleSheet("font-size: 13pt; font-weight: 600; color: #212529; border: none; background: transparent;")
+                # יישור לימין רק לגיל
+                if label_text.startswith("🎂"):
+                    value_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+                else:
+                    value_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                
+                item_layout.addWidget(value_label)
+                item_layout.addWidget(label)
+                
+                info_layout.addWidget(item_widget)
+        
+        layout.addWidget(info_widget)
+        
+        # כפתורים
+        buttons_layout = QHBoxLayout()
+        
+        edit_button = QPushButton("✏️ ערוך פרופיל")
+        edit_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                padding: 10px 20px;
+                font-size: 12pt;
+                font-weight: bold;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        edit_button.clicked.connect(lambda: (dialog.close(), self._show_profile_edit()))
+        
+        close_button = QPushButton("סגור")
+        close_button.setStyleSheet("""
+            QPushButton {
+                background-color: #6c757d;
+                color: white;
+                padding: 10px 20px;
+                font-size: 12pt;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #5a6268;
+            }
+        """)
+        close_button.clicked.connect(dialog.close)
+        
+        buttons_layout.addWidget(edit_button)
+        buttons_layout.addWidget(close_button)
+        
+        layout.addLayout(buttons_layout)
+        
+        dialog.setLayout(layout)
+        dialog.exec()
+    
+    def _show_profile_edit(self):
+        """הצגת טופס עריכת פרופיל"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("עריכת פרופיל אישי")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        
+        # תווית כותרת
+        title_label = QLabel("📋 פרטים אישיים")
+        title_label.setStyleSheet("font-size: 16pt; font-weight: bold; color: #2196F3; padding: 10px;")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # טופס הפרטים
+        form_layout = QGridLayout()
+        form_layout.setSpacing(10)
+        
+        # שם
+        name_label = QLabel("שם מלא:")
+        name_label.setStyleSheet("font-weight: bold;")
+        name_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        name_input = QLineEdit()
+        name_input.setPlaceholderText("הכנס את שמך המלא")
+        name_input.setText(self.profile_data.get("name", ""))
+        name_input.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        form_layout.addWidget(name_input, 0, 0)
+        form_layout.addWidget(name_label, 0, 1)
+        
+        # גובה
+        height_label = QLabel("גובה (ס\"מ):")
+        height_label.setStyleSheet("font-weight: bold;")
+        height_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        height_input = QLineEdit()
+        height_input.setPlaceholderText("לדוגמה: 175")
+        height_input.setValidator(QIntValidator(100, 250, self))
+        height_input.setText(self.profile_data.get("height", ""))
+        height_input.setAlignment(Qt.AlignmentFlag.AlignRight)
+        form_layout.addWidget(height_input, 1, 0)
+        form_layout.addWidget(height_label, 1, 1)
+        
+        # משקל
+        weight_label = QLabel("משקל (ק\"ג):")
+        weight_label.setStyleSheet("font-weight: bold;")
+        weight_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        weight_input = QLineEdit()
+        weight_input.setPlaceholderText("לדוגמה: 75.5")
+        weight_input.setValidator(QDoubleValidator(30.0, 300.0, 1, self))
+        weight_input.setText(self.profile_data.get("weight", ""))
+        weight_input.setAlignment(Qt.AlignmentFlag.AlignRight)
+        form_layout.addWidget(weight_input, 2, 0)
+        form_layout.addWidget(weight_label, 2, 1)
+        
+        # גיל
+        age_label = QLabel("גיל:")
+        age_label.setStyleSheet("font-weight: bold;")
+        age_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        age_input = QLineEdit()
+        age_input.setPlaceholderText("לדוגמה: 25")
+        age_input.setValidator(QIntValidator(10, 120, self))
+        age_input.setText(self.profile_data.get("age", ""))
+        age_input.setAlignment(Qt.AlignmentFlag.AlignRight)
+        form_layout.addWidget(age_input, 3, 0)
+        form_layout.addWidget(age_label, 3, 1)
+        
+        # מין
+        gender_label = QLabel("מין:")
+        gender_label.setStyleSheet("font-weight: bold;")
+        gender_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        gender_layout = QHBoxLayout()
+        
+        gender_group = QButtonGroup(dialog)
+        male_radio = QRadioButton("זכר")
+        female_radio = QRadioButton("נקבה")
+        gender_group.addButton(male_radio)
+        gender_group.addButton(female_radio)
+        
+        current_gender = self.profile_data.get("gender", "")
+        if current_gender == "זכר":
+            male_radio.setChecked(True)
+        elif current_gender == "נקבה":
+            female_radio.setChecked(True)
+        
+        gender_layout.addStretch()
+        gender_layout.addWidget(female_radio)
+        gender_layout.addWidget(male_radio)
+        
+        form_layout.addLayout(gender_layout, 4, 0)
+        form_layout.addWidget(gender_label, 4, 1)
+        
+        layout.addLayout(form_layout)
+        
+        # כפתורי פעולה
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        button_box.button(QDialogButtonBox.StandardButton.Save).setText("שמור")
+        button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("ביטול")
+        
+        def save_profile():
+            # בדיקת תקינות
+            if not name_input.text().strip():
+                QMessageBox.warning(dialog, "שגיאה", "נא למלא שם")
+                return
+            
+            # קבלת המין שנבחר
+            selected_gender = ""
+            if male_radio.isChecked():
+                selected_gender = "זכר"
+            elif female_radio.isChecked():
+                selected_gender = "נקבה"
+            
+            profile_data = {
+                "name": name_input.text().strip(),
+                "height": height_input.text().strip(),
+                "weight": weight_input.text().strip(),
+                "age": age_input.text().strip(),
+                "gender": selected_gender
+            }
+            self._save_profile(profile_data)
+            dialog.accept()
+            # הצגת מסך הפרופיל אחרי השמירה
+            self._show_profile_view()
+        
+        button_box.accepted.connect(save_profile)
+        button_box.rejected.connect(dialog.reject)
+        
+        layout.addWidget(button_box)
+        
+        dialog.setLayout(layout)
+        dialog.exec()
 
     def _add_exercise(self):
         title, ok = QInputDialog.getText(self, "הוספת תרגיל", "שם התרגיל:")
@@ -1001,7 +1893,7 @@ class MainWindow(QMainWindow):
                 if isinstance(tab, ExerciseTab):
                     existing.add(tab.exercise_name)
             if title not in existing:
-                tab = ExerciseTab(title)
+                tab = ExerciseTab(title, self.current_profile_name)
                 self.tab_widget.addTab(tab, title)
                 self.tab_widget.setCurrentWidget(tab)
 
@@ -1024,6 +1916,11 @@ class MainWindow(QMainWindow):
     
     def _export_to_excel(self):
         """ייצוא כל העמודים לקובץ אקסל, כל עמוד לגיליון נפרד"""
+        # בדוק אם openpyxl מותקן
+        if not _HAS_OPENPYXL:
+            QMessageBox.critical(self, "שגיאה", "openpyxl לא מותקן.\n\nכדי לייצא לאקסל, התקן את החבילה:\npip install openpyxl")
+            return
+        
         # בדוק אם יש עמודים לייצא
         if self.tab_widget.count() == 0:
             QMessageBox.warning(self, "שגיאה", "אין עמודים לייצוא")
@@ -1034,7 +1931,6 @@ class MainWindow(QMainWindow):
         default_filename = f"תרגילים_{timestamp}.xlsx"
         
         # בקש מהמשתמש שם קובץ
-        from PySide6.QtWidgets import QFileDialog
         filename, _ = QFileDialog.getSaveFileName(
             self,
             "שמור קובץ אקסל",
@@ -1145,23 +2041,30 @@ class MainWindow(QMainWindow):
                     ws.append(row_data)
                 
                 # הפוך את הטבלה לטבלה חכמה של Excel
-                from openpyxl.worksheet.table import Table, TableStyleInfo
+                if _HAS_OPENPYXL:
+                    try:
+                        from openpyxl.worksheet.table import Table, TableStyleInfo
+                    except ImportError:
+                        pass
                 
                 max_row = ws.max_row
                 max_col = ws.max_column
-                if max_row > 1:
-                    table_range = f"A1:{get_column_letter(max_col)}{max_row}"
-                    excel_table = Table(displayName=f"DataTable{tab_index}", ref=table_range)
-                    
-                    style = TableStyleInfo(
-                        name="TableStyleMedium2",
-                        showFirstColumn=False,
-                        showLastColumn=False,
-                        showRowStripes=True,
-                        showColumnStripes=False
-                    )
-                    excel_table.tableStyleInfo = style
-                    ws.add_table(excel_table)
+                if max_row > 1 and _HAS_OPENPYXL:
+                    try:
+                        table_range = f"A1:{get_column_letter(max_col)}{max_row}"
+                        excel_table = Table(displayName=f"DataTable{tab_index}", ref=table_range)
+                        
+                        style = TableStyleInfo(
+                            name="TableStyleMedium2",
+                            showFirstColumn=False,
+                            showLastColumn=False,
+                            showRowStripes=True,
+                            showColumnStripes=False
+                        )
+                        excel_table.tableStyleInfo = style
+                        ws.add_table(excel_table)
+                    except Exception:
+                        pass  # אם הטבלה נכשלת, נמשיך בלי
                 
                 # התאם רוחב עמודות
                 for col in range(1, max_col + 1):
@@ -1174,39 +2077,45 @@ class MainWindow(QMainWindow):
                         date_cell.number_format = 'DD/MM/YYYY'
                 
                 # צור גרף קווי
-                if max_row > 1:
-                    chart = LineChart()
-                    chart.title = f"גרף משקלים - {exercise_name}"
-                    chart.style = 10
-                    chart.y_axis.title = None
-                    chart.x_axis.title = None
-                    chart.legend = None
-                    
-                    data = Reference(ws, min_col=2, min_row=2, max_col=2, max_row=max_row)
-                    dates = Reference(ws, min_col=1, min_row=2, max_row=max_row)
-                    
-                    chart.add_data(data, titles_from_data=False)
-                    chart.set_categories(dates)
-                    
-                    if len(chart.series) > 0:
-                        series = chart.series[0]
-                        series.smooth = False
+                if max_row > 1 and _HAS_OPENPYXL:
+                    try:
+                        chart = LineChart()
+                        chart.title = f"גרף משקלים - {exercise_name}"
+                        chart.style = 10
+                        chart.y_axis.title = None
+                        chart.x_axis.title = None
+                        chart.legend = None
                         
-                        from openpyxl.chart.marker import Marker
-                        from openpyxl.drawing.line import LineProperties
+                        data = Reference(ws, min_col=2, min_row=2, max_col=2, max_row=max_row)
+                        dates = Reference(ws, min_col=1, min_row=2, max_row=max_row)
                         
-                        line = LineProperties()
-                        line.solidFill = "2196F3"
-                        line.width = 25000
-                        series.graphicalProperties.line = line
+                        chart.add_data(data, titles_from_data=False)
+                        chart.set_categories(dates)
                         
-                        marker = Marker(symbol='circle', size=5)
-                        series.marker = marker
-                    
-                    chart.width = 20
-                    chart.height = 12
-                    
-                    ws.add_chart(chart, f"A{max_row + 3}")
+                        if len(chart.series) > 0:
+                            series = chart.series[0]
+                            series.smooth = False
+                            
+                            try:
+                                from openpyxl.chart.marker import Marker
+                                from openpyxl.drawing.line import LineProperties
+                                
+                                line = LineProperties()
+                                line.solidFill = "2196F3"
+                                line.width = 25000
+                                series.graphicalProperties.line = line
+                                
+                                marker = Marker(symbol='circle', size=5)
+                                series.marker = marker
+                            except ImportError:
+                                pass  # אם לא ניתן לעצב, נמשיך בלי
+                        
+                        chart.width = 20
+                        chart.height = 12
+                        
+                        ws.add_chart(chart, f"A{max_row + 3}")
+                    except Exception:
+                        pass  # אם הגרף נכשל, נמשיך בלי
             
             # שמור את הקובץ
             wb.save(filename)
@@ -1328,9 +2237,14 @@ class MainWindow(QMainWindow):
         
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                path = Path.cwd() / f"exercise_state_{current.exercise_name}.json"
+                # שימוש בפורמט הקובץ החדש עם שם הפרופיל
+                path = Path.cwd() / f"exercise_{current.profile_name}_{current.exercise_name}.json"
                 if path.exists():
                     os.remove(path)
+                # מחיקת קובץ ישן אם קיים
+                old_path = Path.cwd() / f"exercise_state_{current.exercise_name}.json"
+                if old_path.exists():
+                    os.remove(old_path)
                 
                 # מחק את הטאב הנוכחי
                 idx = self.tab_widget.currentIndex()
@@ -1341,7 +2255,7 @@ class MainWindow(QMainWindow):
                 if self.tab_widget.count() == 0:
                     title, ok = QInputDialog.getText(self, "תרגיל ראשון", "שם התרגיל:")
                     if ok and title.strip():
-                        tab = ExerciseTab(title)
+                        tab = ExerciseTab(title, self.current_profile_name)
                         self.tab_widget.addTab(tab, title)
 
                 self.statusBar().showMessage(f"נמחקו כל הנתונים מהעמוד '{current.exercise_name}'", 2000)
@@ -1358,7 +2272,14 @@ class MainWindow(QMainWindow):
         
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                # מחק את כל הקבצים
+                # מחק את כל הקבצים של הפרופיל הנוכחי
+                profile_name = self.current_profile_name or "ברירת מחדל"
+                for file in Path.cwd().glob(f"exercise_{profile_name}_*.json"):
+                    try:
+                        os.remove(file)
+                    except Exception:
+                        pass
+                # מחיקת קבצים ישנים אם קיימים
                 for file in Path.cwd().glob("exercise_state_*.json"):
                     try:
                         os.remove(file)
@@ -1431,7 +2352,7 @@ class MainWindow(QMainWindow):
             event.accept()
 
 
-def apply_stylesheet(app: QApplication):
+def apply_stylesheet(app: Any):
     # הגדרת סגנון כללי לאפליקציה
     app.setStyleSheet("""
         QMainWindow {
@@ -1549,25 +2470,45 @@ def apply_stylesheet(app: QApplication):
     """)
 
 if __name__ == "__main__":
+    if not _HAS_QT:
+        raise RuntimeError("PySide6 is required to run the GUI. Install requirements from requirements.txt")
     app = QApplication(sys.argv)
     apply_stylesheet(app)
     window = MainWindow()
 
-    # חפש קבצי שמירה קיימים
-    exercise_files = list(Path.cwd().glob("exercise_state_*.json"))
+    # חפש קבצי שמירה קיימים לפרופיל הנוכחי
+    profile_name = window.current_profile_name or "ברירת מחדל"
+    exercise_files = list(Path.cwd().glob(f"exercise_{profile_name}_*.json"))
+    
+    # אם אין קבצים לפרופיל הנוכחי, חפש קבצים ישנים (exercise_state_) ומיגרר אותם
+    if not exercise_files:
+        old_files = list(Path.cwd().glob("exercise_state_*.json"))
+        if old_files and not window.current_profile_name:
+            # מיגרציה של קבצים ישנים לפורמט החדש
+            window.current_profile_name = "ברירת מחדל"
+            profile_name = "ברירת מחדל"
+            for old_file in old_files:
+                old_name = old_file.stem.replace("exercise_state_", "")
+                new_file = Path.cwd() / f"exercise_{profile_name}_{old_name}.json"
+                try:
+                    import shutil
+                    shutil.copy2(old_file, new_file)
+                except Exception:
+                    pass
+            exercise_files = list(Path.cwd().glob(f"exercise_{profile_name}_*.json"))
     
     if exercise_files:
         # אם יש קבצים קיימים, טען אותם
         for file in exercise_files:
             # חלץ את שם התרגיל מהקובץ
-            exercise_name = file.stem.replace("exercise_state_", "")
-            tab = ExerciseTab(exercise_name)
+            exercise_name = file.stem.replace(f"exercise_{profile_name}_", "")
+            tab = ExerciseTab(exercise_name, profile_name)
             window.tab_widget.addTab(tab, exercise_name)
     else:
         # אם אין קבצים קיימים, בקש שם תרגיל חדש
         title, ok = QInputDialog.getText(window, "תרגיל ראשון", "שם התרגיל:")
         if ok and title.strip():
-            tab = ExerciseTab(title)
+            tab = ExerciseTab(title, profile_name)
             window.tab_widget.addTab(tab, title)
 
     window.show()
