@@ -5,6 +5,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# ייבוא מידע גרסה
+try:
+    from version import __version__, __app_name__, get_version_string
+except ImportError:
+    __version__ = "1.0.0"
+    __app_name__ = "מעקב אימונים"
+    def get_version_string():
+        return f"{__app_name__} v{__version__}"
+
 # Optional dependencies: import lazily and tolerate absence so module can be
 # imported in environments missing optional packages (e.g., CI/test).
 try:
@@ -33,7 +42,7 @@ except Exception:
     mdates = None  # type: ignore
     _HAS_MPL = False
 try:
-    from PySide6.QtCore import QDate, QEvent, QSize, Qt
+    from PySide6.QtCore import QDate, QEvent, QSize, Qt, QTimer
     from PySide6.QtGui import (
         QAction,
         QColor,
@@ -100,6 +109,53 @@ class EqualWidthTable(QTableWidget):
         col_width = width // cols
         for c in range(cols):
             self.setColumnWidth(c, col_width)
+
+
+class SummaryTab(QWidget):
+    """גיליון סיכום כללי של כל התרגילים"""
+    def __init__(self):
+        super().__init__()
+        self.setContentsMargins(10, 10, 10, 10)
+        self._init_ui()
+    
+    def _init_ui(self):
+        """יצירת ממשק המשתמש לגיליון הסיכום"""
+        layout = QVBoxLayout()
+        layout.setSpacing(20)
+        
+        # כותרת
+        title_label = QLabel("📊 סיכום כללי")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 24pt;
+                font-weight: bold;
+                color: #2196F3;
+                padding: 20px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #E3F2FD, stop:1 #BBDEFB);
+                border-radius: 10px;
+            }
+        """)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # הודעה זמנית
+        info_label = QLabel("🚧 גיליון זה בבנייה...\n\nבעתיד יוצגו כאן:\n• סיכום כללי של כל התרגילים\n• גרפי השוואה\n• סטטיסטיקות מתקדמות")
+        info_label.setStyleSheet("""
+            QLabel {
+                font-size: 14pt;
+                color: #666;
+                padding: 40px;
+                background-color: #FAFAFA;
+                border: 2px dashed #BDBDBD;
+                border-radius: 8px;
+            }
+        """)
+        info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(info_label)
+        
+        layout.addStretch()
+        self.setLayout(layout)
 
 
 class ExerciseTab(QWidget):
@@ -982,7 +1038,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # הגדרות חלון ראשי
-        self.setWindowTitle("מעקב משקלים")
+        self.setWindowTitle(get_version_string())
         self.setMinimumSize(QSize(800, 600))
         self.showMaximized()  # פתיחה במסך מלא
         
@@ -1105,6 +1161,88 @@ class MainWindow(QMainWindow):
         # טעינת פרטי פרופיל
         self.current_profile_name = None  # שם הפרופיל הנוכחי
         self._load_profile()
+        
+        # בדיקת פרופיל בהפעלה ראשונה - יבוצע אחרי שהחלון יוצג
+        # טעינת התרגילים תתבצע בסוף _check_first_run או ישירות אם יש פרופיל
+        QTimer.singleShot(100, self._check_first_run)
+    
+    def _check_first_run(self):
+        """בדיקה אם זו הפעלה ראשונה ואין פרופיל"""
+        # בדוק אם יש פרופילים קיימים
+        profiles = self._get_all_profiles()
+        
+        if not profiles:
+            # אין פרופילים - זו הפעלה ראשונה!
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setWindowTitle("ברוך הבא! 👋")
+            msg.setText("🎉 זו ההפעלה הראשונה של האפליקציה!\n\nכדי להתחיל, עליך ליצור פרופיל אישי.")
+            msg.setInformativeText("הפרופיל מאפשר לך:\n• לנהל מספר משתמשים באפליקציה\n• לעקוב אחר ההתקדמות האישית שלך\n• לשמור את הנתונים בנפרד")
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+            
+            # פתח מיד את דיאלוג יצירת פרופיל
+            self._create_first_profile()
+        
+        # טען תרגילים (לאחר שהפרופיל נקבע)
+        self._reload_exercises()
+    
+    def _create_first_profile(self):
+        """יצירת פרופיל ראשון"""
+        while True:
+            # בקש שם לפרופיל
+            name, ok = QInputDialog.getText(
+                self, 
+                "יצירת פרופיל ראשון",
+                "הכנס שם לפרופיל שלך:",
+                QLineEdit.EchoMode.Normal,
+                "הפרופיל שלי"
+            )
+            
+            if ok and name.strip():
+                # יצירת פרופיל חדש
+                self.current_profile_name = name.strip()
+                empty_profile = {
+                    "name": "",
+                    "height": "",
+                    "weight": "",
+                    "age": "",
+                    "gender": ""
+                }
+                self._save_profile(empty_profile, self.current_profile_name)
+                self.profile_data = empty_profile
+                
+                # הצע למלא פרטים נוספים
+                reply = QMessageBox.question(
+                    self,
+                    "מילוי פרטים",
+                    "האם ברצונך למלא את הפרטים האישיים שלך כעת?\n\n(ניתן למלא גם מאוחר יותר דרך כפתור הפרופיל)",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes
+                )
+                
+                if reply == QMessageBox.StandardButton.Yes:
+                    self._show_profile_edit()
+                
+                # הכל בסדר, צא מהלולאה
+                break
+            elif ok:
+                # שם ריק - בקש שוב
+                QMessageBox.warning(self, "שגיאה", "נא להכניס שם לפרופיל")
+            else:
+                # המשתמש ביטל - חייב ליצור פרופיל!
+                reply = QMessageBox.critical(
+                    self,
+                    "פרופיל נדרש",
+                    "לא ניתן להשתמש באפליקציה ללא פרופיל.\n\nהאם ברצונך ליצור פרופיל עכשיו?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes
+                )
+                
+                if reply == QMessageBox.StandardButton.No:
+                    # המשתמש לא רוצה ליצור פרופיל - סגור את האפליקציה
+                    self.close()
+                    break
     
     def _set_window_icon(self):
         """יצירת והגדרת אייקון מקצועי לחלון"""
@@ -1236,9 +1374,9 @@ class MainWindow(QMainWindow):
                     pass
             
             # עדכון שם הפרופיל בכותרת החלון
-            self.setWindowTitle(f"מעקב אימונים - {self.current_profile_name}")
+            self.setWindowTitle(f"{get_version_string()} - {self.current_profile_name}")
         else:
-            self.setWindowTitle("מעקב אימונים")
+            self.setWindowTitle(get_version_string())
 
     def _save_profile(self, profile_data, profile_name=None):
         """שמירת פרטי הפרופיל לקובץ"""
@@ -1261,7 +1399,7 @@ class MainWindow(QMainWindow):
             with open(active_profile_path, "w", encoding="utf-8") as f:
                 json.dump({"active_profile": profile_name}, f, ensure_ascii=False, indent=2)
             
-            self.setWindowTitle(f"מעקב אימונים - {profile_name}")
+            self.setWindowTitle(f"{get_version_string()} - {profile_name}")
             self.statusBar().showMessage("פרטי הפרופיל נשמרו בהצלחה", 2000)
         except Exception as e:
             QMessageBox.warning(self, "שגיאה", f"שגיאה בשמירת הפרופיל: {e}")
@@ -1619,6 +1757,9 @@ class MainWindow(QMainWindow):
         else:
             # אם אין תרגילים, נציע ליצור אחד
             QMessageBox.information(self, "אין תרגילים", f"לפרופיל '{profile_name}' אין עדיין תרגילים.\nתוכל להוסיף תרגיל חדש דרך התפריט 'עריכה'.")
+        
+        # עדכן את גיליון הסיכום
+        self._update_summary_tab()
 
     def _show_profile_dialog(self):
         """הצגת חלון עריכת פרופיל"""
@@ -1889,6 +2030,30 @@ class MainWindow(QMainWindow):
                 tab = ExerciseTab(title, self.current_profile_name)
                 self.tab_widget.addTab(tab, title)
                 self.tab_widget.setCurrentWidget(tab)
+                # עדכן את גיליון הסיכום
+                self._update_summary_tab()
+
+    def _update_summary_tab(self):
+        """עדכון גיליון הסיכום - מוצג רק אם יש לפחות 2 תרגילים"""
+        # ספור תרגילים (לא כולל גיליון סיכום אם קיים)
+        exercise_count = 0
+        summary_tab_index = -1
+        
+        for i in range(self.tab_widget.count()):
+            tab = self.tab_widget.widget(i)
+            if isinstance(tab, SummaryTab):
+                summary_tab_index = i
+            elif isinstance(tab, ExerciseTab):
+                exercise_count += 1
+        
+        # אם יש 2 תרגילים או יותר ואין גיליון סיכום - צור אותו
+        if exercise_count >= 2 and summary_tab_index == -1:
+            summary_tab = SummaryTab()
+            self.tab_widget.insertTab(0, summary_tab, "📊 סיכום")
+        
+        # אם יש פחות מ-2 תרגילים וקיים גיליון סיכום - הסר אותו
+        elif exercise_count < 2 and summary_tab_index != -1:
+            self.tab_widget.removeTab(summary_tab_index)
 
     def _save_current_tab(self):
         current = self.tab_widget.currentWidget()
@@ -2250,6 +2415,9 @@ class MainWindow(QMainWindow):
                     if ok and title.strip():
                         tab = ExerciseTab(title, self.current_profile_name)
                         self.tab_widget.addTab(tab, title)
+                
+                # עדכן את גיליון הסיכום
+                self._update_summary_tab()
 
                 self.statusBar().showMessage(f"נמחקו כל הנתונים מהעמוד '{current.exercise_name}'", 2000)
             except Exception as e:
