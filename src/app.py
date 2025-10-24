@@ -33,20 +33,13 @@ except Exception:
     mdates = None  # type: ignore
     _HAS_MPL = False
 try:
-    from PySide6.QtCore import QDate, QEvent, QPointF, QRect, QRectF, QSize, Qt
+    from PySide6.QtCore import QDate, QEvent, QSize, Qt
     from PySide6.QtGui import (
         QAction,
-        QBrush,
         QColor,
         QDoubleValidator,
-        QFont,
-        QIcon,
         QIntValidator,
         QKeySequence,
-        QLinearGradient,
-        QPainter,
-        QPen,
-        QPixmap,
         QShortcut,
         QValidator,
     )
@@ -1116,8 +1109,8 @@ class MainWindow(QMainWindow):
     def _set_window_icon(self):
         """יצירת והגדרת אייקון מקצועי לחלון"""
         try:
-            from PySide6.QtGui import QPixmap, QIcon, QPainter, QFont, QPen, QBrush, QLinearGradient
-            from PySide6.QtCore import Qt, QRect, QRectF, QPointF
+            from PySide6.QtGui import QPixmap, QIcon, QPainter, QPen, QBrush, QLinearGradient
+            from PySide6.QtCore import Qt, QRectF, QPointF
             
             # יצירת פיקסמאפ בגודל גדול יותר לאיכות טובה
             size = 128
