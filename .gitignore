@@ -3,3 +3,16 @@ __pycache__/
 .vscode/
 *.pyc
 .env
+
+# קבצי נתונים אישיים
+exercise_*.json
+profile_*.json
+active_profile.json
+user_profile.json
+app_icon.png
+
+# קבצי PyInstaller
+build/
+dist/
+*.spec
+*.exe
