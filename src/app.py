@@ -42,13 +42,18 @@ except Exception:
     mdates = None  # type: ignore
     _HAS_MPL = False
 try:
-    from PySide6.QtCore import QDate, QEvent, QSize, Qt, QTimer
+    from PySide6.QtCore import QDate, QEvent, QSize, Qt, QTimer, QRectF, QPointF
     from PySide6.QtGui import (
         QAction,
         QColor,
         QDoubleValidator,
+        QFont,
         QIntValidator,
         QKeySequence,
+        QPainter,
+        QPainterPath,
+        QPen,
+        QPixmap,
         QShortcut,
         QValidator,
     )
@@ -259,11 +264,7 @@ class ExerciseTab(QWidget):
         """
         self.btn_duplicate_row.setStyleSheet(duplicate_button_style)
         
-        # התחלתי מצב כפתורים - מבוטלים
-        self.btn_pop.setEnabled(False)
-        self.btn_delete_row.setEnabled(False)
-        self.btn_duplicate_row.setEnabled(False)
-
+        # התחלת מצב כפתורים - מבוטלים
         self.btn_add.setEnabled(False)
         self.btn_pop.setEnabled(False)
         self.btn_delete_row.setEnabled(False)
@@ -1033,6 +1034,284 @@ class ExerciseTab(QWidget):
             self.table.clearFocus()
 
 
+class ImageCropDialog(QDialog):
+    """דיאלוג לחיתוך אזור עגול מתמונה"""
+    def __init__(self, image_path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("חיתוך תמונת פרופיל")
+        self.setModal(True)
+        
+        # טעינת התמונה המקורית
+        self.original_pixmap = QPixmap(image_path)
+        
+        # הגדרת גודל התצוגה (מקסימום 500x500)
+        max_display_size = 500
+        display_pixmap = self.original_pixmap.scaled(
+            max_display_size, max_display_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        
+        # יחס בין התצוגה למקור
+        self.scale_factor = display_pixmap.width() / self.original_pixmap.width()
+        
+        # משתנים לחיתוך
+        self.crop_diameter = min(display_pixmap.width(), display_pixmap.height()) // 2
+        self.crop_x = (display_pixmap.width() - self.crop_diameter) // 2
+        self.crop_y = (display_pixmap.height() - self.crop_diameter) // 2
+        
+        # Layout
+        layout = QVBoxLayout()
+        
+        # כותרת
+        title_label = QLabel("✂️ בחר את האזור לחיתוך")
+        title_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2196F3; padding: 10px;")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # הוראות
+        instructions = QLabel("גרור את המעגל למיקום הרצוי, השתמש בגלגלת לשינוי גודל")
+        instructions.setStyleSheet("font-size: 10pt; color: #666; padding: 5px;")
+        instructions.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(instructions)
+        
+        # תווית התמונה
+        self.image_label = QLabel()
+        self.image_label.setFixedSize(display_pixmap.width(), display_pixmap.height())
+        self.image_label.setPixmap(display_pixmap)
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setStyleSheet("border: 2px solid #2196F3;")
+        
+        # שמירת התמונה המקורית לתצוגה
+        self.display_pixmap = display_pixmap
+        
+        # הוספה למרכז
+        image_container = QHBoxLayout()
+        image_container.addStretch()
+        image_container.addWidget(self.image_label)
+        image_container.addStretch()
+        layout.addLayout(image_container)
+        
+        # כפתורים
+        button_layout = QHBoxLayout()
+        
+        cancel_button = QPushButton("❌ ביטול")
+        cancel_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                padding: 10px 20px;
+                font-size: 11pt;
+                border-radius: 5px;
+            }
+            QPushButton:hover { background-color: #d32f2f; }
+        """)
+        cancel_button.clicked.connect(self.reject)
+        
+        crop_button = QPushButton("✂️ חתוך")
+        crop_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 10px 20px;
+                font-size: 11pt;
+                border-radius: 5px;
+            }
+            QPushButton:hover { background-color: #45a049; }
+        """)
+        crop_button.clicked.connect(self.accept)
+        
+        button_layout.addWidget(cancel_button)
+        button_layout.addStretch()
+        button_layout.addWidget(crop_button)
+        
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+        
+        # משתנים לגרירה
+        self.dragging = False
+        self.last_pos = None
+        
+        # התקנת event filter
+        self.image_label.installEventFilter(self)
+        
+        # שרטוט ראשוני
+        self.update_display()
+    
+    def eventFilter(self, obj, event):
+        """טיפול באירועי עכבר"""
+        if obj == self.image_label:
+            if event.type() == event.Type.MouseButtonPress:
+                # בדוק אם לחצו בתוך המעגל
+                pos = event.position()
+                center_x = self.crop_x + self.crop_diameter // 2
+                center_y = self.crop_y + self.crop_diameter // 2
+                distance = ((pos.x() - center_x) ** 2 + (pos.y() - center_y) ** 2) ** 0.5
+                
+                if distance <= self.crop_diameter // 2:
+                    self.dragging = True
+                    self.last_pos = pos
+                    return True
+                    
+            elif event.type() == event.Type.MouseMove:
+                if self.dragging and self.last_pos:
+                    pos = event.position()
+                    dx = pos.x() - self.last_pos.x()
+                    dy = pos.y() - self.last_pos.y()
+                    
+                    # עדכון מיקום המעגל
+                    self.crop_x += dx
+                    self.crop_y += dy
+                    
+                    # הגבלה לגבולות התמונה
+                    self.crop_x = max(0, min(self.crop_x, self.image_label.width() - self.crop_diameter))
+                    self.crop_y = max(0, min(self.crop_y, self.image_label.height() - self.crop_diameter))
+                    
+                    self.last_pos = pos
+                    self.update_display()
+                    return True
+                    
+            elif event.type() == event.Type.MouseButtonRelease:
+                self.dragging = False
+                self.last_pos = None
+                return True
+                
+            elif event.type() == event.Type.Wheel:
+                # שינוי גודל המעגל עם גלגלת העכבר
+                delta = event.angleDelta().y()
+                change = 10 if delta > 0 else -10
+                
+                new_diameter = self.crop_diameter + change
+                min_size = 50
+                max_size = min(self.image_label.width(), self.image_label.height())
+                
+                if min_size <= new_diameter <= max_size:
+                    # שמור על המרכז
+                    center_x = self.crop_x + self.crop_diameter // 2
+                    center_y = self.crop_y + self.crop_diameter // 2
+                    
+                    self.crop_diameter = new_diameter
+                    
+                    # עדכון מיקום כך שהמרכז יישאר באותו מקום
+                    self.crop_x = center_x - self.crop_diameter // 2
+                    self.crop_y = center_y - self.crop_diameter // 2
+                    
+                    # הגבלה לגבולות
+                    self.crop_x = max(0, min(self.crop_x, self.image_label.width() - self.crop_diameter))
+                    self.crop_y = max(0, min(self.crop_y, self.image_label.height() - self.crop_diameter))
+                    
+                    self.update_display()
+                return True
+                
+        return super().eventFilter(obj, event)
+    
+    def update_display(self):
+        """עדכון התצוגה עם המעגל"""
+        # שכפול התמונה המקורית
+        display_pixmap = self.display_pixmap.copy()
+        
+        # שימוש ב-context manager כדי להבטיח סגירה נכונה
+        painter = QPainter(display_pixmap)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            
+            # ציור רקע כהה למחוץ למעגל
+            painter.setBrush(QColor(0, 0, 0, 150))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRect(display_pixmap.rect())
+            
+            # ציור המעגל (החלק הנבחר) - מחיקת הרקע הכהה בתוכו
+            path = QPainterPath()
+            path.addEllipse(self.crop_x, self.crop_y, self.crop_diameter, self.crop_diameter)
+            
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
+            painter.fillPath(path, QColor(0, 0, 0, 150))
+            
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+            
+            # ציור גבול המעגל
+            pen = QPen(QColor("#2196F3"), 3)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(self.crop_x, self.crop_y, self.crop_diameter, self.crop_diameter)
+        finally:
+            painter.end()
+        
+        # עכשיו אפשר להציב את הpixmap בבטחה
+        self.image_label.setPixmap(display_pixmap)
+    
+    def get_cropped_pixmap(self):
+        """קבלת התמונה החתוכה"""
+        # חישוב קואורדינטות במקור
+        original_x = int(self.crop_x / self.scale_factor)
+        original_y = int(self.crop_y / self.scale_factor)
+        original_diameter = int(self.crop_diameter / self.scale_factor)
+        
+        # חיתוך מהתמונה המקורית
+        cropped = self.original_pixmap.copy(
+            original_x, original_y, 
+            original_diameter, original_diameter
+        )
+        
+        # יצירת תמונה עגולה
+        result = QPixmap(original_diameter, original_diameter)
+        result.fill(Qt.GlobalColor.transparent)
+        
+        painter = QPainter(result)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            
+            path = QPainterPath()
+            path.addEllipse(0, 0, original_diameter, original_diameter)
+            painter.setClipPath(path)
+            painter.drawPixmap(0, 0, cropped)
+        finally:
+            painter.end()
+        
+        return result
+
+
+def create_circular_pixmap(image_path, size):
+    """יצירת תמונה עגולה מתמונה מלבנית"""
+    # טעינת התמונה המקורית
+    source = QPixmap(image_path)
+    
+    # יצירת pixmap חדש עם רקע שקוף
+    target = QPixmap(size, size)
+    target.fill(Qt.GlobalColor.transparent)
+    
+    # יצירת painter
+    painter = QPainter(target)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        
+        # יצירת מסלול עגול
+        path = QPainterPath()
+        path.addEllipse(0, 0, size, size)
+        
+        # קביעת אזור החיתוך למעגל
+        painter.setClipPath(path)
+        
+        # שרטוט התמונה (מותאמת לגודל)
+        scaled_source = source.scaled(
+            size, size,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        
+        # מרכוז התמונה
+        x = (size - scaled_source.width()) // 2
+        y = (size - scaled_source.height()) // 2
+        painter.drawPixmap(x, y, scaled_source)
+    finally:
+        painter.end()
+    
+    return target
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1056,31 +1335,57 @@ class MainWindow(QMainWindow):
 
         # הגדרת טאבים
         self.tab_widget = QTabWidget()
+        self.tab_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tab_widget.customContextMenuRequested.connect(self._show_tab_context_menu)
         layout.addWidget(self.tab_widget)
 
         # יצירת סרגל כלים
         toolbar = QToolBar()
         self.addToolBar(toolbar)
         
-        # כפתור פרופיל בסרגל כלים
-        profile_action = QAction("👤 פרופיל", self)
-        profile_action.setShortcuts([QKeySequence("Ctrl+P"), QKeySequence("Ctrl+פ")])  # תמיכה באנגלית ועברית
-        profile_action.triggered.connect(self._show_profile_dialog)
-        toolbar.addAction(profile_action)
-        
-        # כפתור החלף פרופיל
-        switch_profile_action = QAction("🔄 החלף פרופיל", self)
-        switch_profile_action.setShortcuts([QKeySequence("Ctrl+Shift+P"), QKeySequence("Ctrl+Shift+פ")])
-        switch_profile_action.triggered.connect(self._switch_profile)
-        toolbar.addAction(switch_profile_action)
-        
-        toolbar.addSeparator()
-        
         # כפתור שמירה בסרגל כלים עם קיצור מקלדת
         save_action = QAction("שמור", self)
         save_action.setShortcuts([QKeySequence("Ctrl+S"), QKeySequence("Ctrl+ד")])  # תמיכה באנגלית ועברית
         save_action.triggered.connect(self._save_current_tab)
         toolbar.addAction(save_action)
+        
+        # הוספת spacer כדי לדחוף את תמונת הפרופיל לצד ימין
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
+        
+        # קונטיינר לתמונה ושם פרופיל
+        profile_container = QWidget()
+        profile_layout = QHBoxLayout(profile_container)
+        profile_layout.setContentsMargins(5, 0, 5, 0)
+        profile_layout.setSpacing(10)
+        
+        # שם הפרופיל
+        self.profile_name_label = QLabel()
+        self.profile_name_label.setStyleSheet("""
+            QLabel {
+                font-size: 13pt;
+                font-weight: bold;
+                color: #2196F3;
+                padding: 5px;
+            }
+        """)
+        self.profile_name_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.profile_name_label.mousePressEvent = lambda e: self._show_profile_dialog()
+        self.profile_name_label.setToolTip("לחץ לצפייה בפרופיל (Ctrl+P)")
+        profile_layout.addWidget(self.profile_name_label)
+        
+        # תמונת פרופיל בצד ימין של הToolbar
+        self.profile_image_widget = QLabel()
+        self.profile_image_widget.setFixedSize(56, 56)
+        self.profile_image_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.profile_image_widget.setScaledContents(False)
+        self.profile_image_widget.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.profile_image_widget.mousePressEvent = lambda e: self._show_profile_dialog()
+        self.profile_image_widget.setToolTip("לחץ לצפייה בפרופיל (Ctrl+P)")
+        profile_layout.addWidget(self.profile_image_widget)
+        
+        toolbar.addWidget(profile_container)
 
         # תפריט קובץ
         file_menu = self.menuBar().addMenu("קובץ")
@@ -1106,6 +1411,12 @@ class MainWindow(QMainWindow):
         # קיצורים נוספים בעברית ל-Redo
         redo_shortcut_he = QShortcut(QKeySequence("Ctrl+ט"), self)
         redo_shortcut_he.activated.connect(self._redo_current_tab)
+        
+        # קיצורי מקלדת לפרופיל (ללא כפתור בtoolbar)
+        profile_shortcut = QShortcut(QKeySequence("Ctrl+P"), self)
+        profile_shortcut.activated.connect(self._show_profile_dialog)
+        profile_shortcut_he = QShortcut(QKeySequence("Ctrl+פ"), self)
+        profile_shortcut_he.activated.connect(self._show_profile_dialog)
         
         file_menu.addSeparator()
         
@@ -1207,7 +1518,8 @@ class MainWindow(QMainWindow):
                     "height": "",
                     "weight": "",
                     "age": "",
-                    "gender": ""
+                    "gender": "",
+                    "profile_image": ""
                 }
                 self._save_profile(empty_profile, self.current_profile_name)
                 self.profile_data = empty_profile
@@ -1247,8 +1559,7 @@ class MainWindow(QMainWindow):
     def _set_window_icon(self):
         """יצירת והגדרת אייקון מקצועי לחלון"""
         try:
-            from PySide6.QtGui import QPixmap, QIcon, QPainter, QPen, QBrush, QLinearGradient
-            from PySide6.QtCore import Qt, QRectF, QPointF
+            from PySide6.QtGui import QIcon, QBrush, QLinearGradient
             
             # יצירת פיקסמאפ בגודל גדול יותר לאיכות טובה
             size = 128
@@ -1358,7 +1669,8 @@ class MainWindow(QMainWindow):
             "height": "",
             "weight": "",
             "age": "",
-            "gender": ""
+            "gender": "",
+            "profile_image": ""
         }
         
         # טעינת נתוני הפרופיל הנוכחי מהקובץ שלו
@@ -1375,8 +1687,104 @@ class MainWindow(QMainWindow):
             
             # עדכון שם הפרופיל בכותרת החלון
             self.setWindowTitle(f"{get_version_string()} - {self.current_profile_name}")
+            
+            # עדכון תמונת הפרופיל ב-toolbar
+            self._update_profile_image_widget()
         else:
             self.setWindowTitle(get_version_string())
+            self._update_profile_image_widget()
+
+    def _update_profile_image_widget(self):
+        """עדכון תמונת הפרופיל ושם הפרופיל ב-toolbar"""
+        if not hasattr(self, 'profile_image_widget'):
+            return
+        
+        # עדכון שם הפרופיל
+        if hasattr(self, 'profile_name_label'):
+            self.profile_name_label.setText(self.current_profile_name or "")
+            
+        profile_image_path = self.profile_data.get("profile_image", "")
+        if profile_image_path and Path(profile_image_path).exists():
+            try:
+                # טעינת התמונה המקורית
+                original = QPixmap(profile_image_path)
+                if original.isNull():
+                    self._set_default_profile_image()
+                    return
+                
+                # יצירת פיקסמפ סופי בגודל 56x56 עם שקיפות
+                final_pixmap = QPixmap(56, 56)
+                final_pixmap.fill(Qt.GlobalColor.transparent)
+                
+                painter = QPainter(final_pixmap)
+                try:
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                    
+                    # יצירת path עגול לתמונה (50x50 במרכז)
+                    path = QPainterPath()
+                    path.addEllipse(3, 3, 50, 50)
+                    painter.setClipPath(path)
+                    
+                    # רינדור התמונה בגודל המתאים
+                    scaled = original.scaled(50, 50, Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
+                                            Qt.TransformationMode.SmoothTransformation)
+                    x_offset = (50 - scaled.width()) // 2 + 3
+                    y_offset = (50 - scaled.height()) // 2 + 3
+                    painter.drawPixmap(x_offset, y_offset, scaled)
+                    
+                    # ביטול ה-clip לציור הבורדר
+                    painter.setClipping(False)
+                    
+                    # ציור בורדר עגול
+                    pen = QPen(QColor("#2196F3"), 3)
+                    painter.setPen(pen)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawEllipse(2, 2, 52, 52)
+                finally:
+                    painter.end()
+                
+                self.profile_image_widget.setPixmap(final_pixmap)
+            except Exception:
+                self._set_default_profile_image()
+        else:
+            self._set_default_profile_image()
+    
+    def _set_default_profile_image(self):
+        """הגדרת תמונת פרופיל ברירת מחדל"""
+        if not hasattr(self, 'profile_image_widget'):
+            return
+        
+        # יצירת פיקסמפ עגול עם האייקון ברירת מחדל
+        pixmap = QPixmap(56, 56)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        
+        painter = QPainter(pixmap)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            
+            # ציור רקע עגול
+            painter.setBrush(QColor("#E3F2FD"))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(3, 3, 50, 50)
+            
+            # ציור האימוג'י
+            painter.setPen(QColor("#2196F3"))
+            font = QFont()
+            font.setPointSize(20)
+            painter.setFont(font)
+            painter.drawText(3, 3, 50, 50, Qt.AlignmentFlag.AlignCenter, "👤")
+            
+            # ציור בורדר עגול
+            pen = QPen(QColor("#2196F3"), 3)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(2, 2, 52, 52)
+        finally:
+            painter.end()
+        
+        self.profile_image_widget.setPixmap(pixmap)
 
     def _save_profile(self, profile_data, profile_name=None):
         """שמירת פרטי הפרופיל לקובץ"""
@@ -1400,6 +1808,10 @@ class MainWindow(QMainWindow):
                 json.dump({"active_profile": profile_name}, f, ensure_ascii=False, indent=2)
             
             self.setWindowTitle(f"{get_version_string()} - {profile_name}")
+            
+            # עדכון תמונת הפרופיל ב-toolbar
+            self._update_profile_image_widget()
+            
             self.statusBar().showMessage("פרטי הפרופיל נשמרו בהצלחה", 2000)
         except Exception as e:
             QMessageBox.warning(self, "שגיאה", f"שגיאה בשמירת הפרופיל: {e}")
@@ -1618,6 +2030,86 @@ class MainWindow(QMainWindow):
             delete_button.clicked.connect(delete_selected_profile)
             layout.addWidget(delete_button)
             
+            # כפתור עריכת שם פרופיל
+            rename_button = QPushButton("✏️ ערוך שם פרופיל נבחר")
+            rename_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #FF9800;
+                    color: white;
+                    padding: 10px;
+                    font-size: 12pt;
+                    font-weight: bold;
+                    border-radius: 5px;
+                }
+                QPushButton:hover {
+                    background-color: #F57C00;
+                }
+            """)
+            
+            def rename_selected_profile():
+                current_item = profiles_list.currentItem()
+                if not current_item:
+                    QMessageBox.warning(dialog, "שגיאה", "נא לבחור פרופיל מהרשימה")
+                    return
+                
+                profile_text = current_item.text()
+                old_name = profile_text.replace("👤 ", "").replace(" (פעיל)", "").strip()
+                
+                # בקש שם חדש
+                new_name, ok = QInputDialog.getText(
+                    dialog,
+                    "עריכת שם פרופיל",
+                    f"שם חדש עבור פרופיל '{old_name}':",
+                    QLineEdit.EchoMode.Normal,
+                    old_name
+                )
+                
+                if ok and new_name.strip() and new_name != old_name:
+                    # בדוק שאין פרופיל עם שם זהה
+                    existing_profiles = self._get_all_profiles()
+                    if new_name in existing_profiles:
+                        QMessageBox.warning(dialog, "שגיאה", f"פרופיל בשם '{new_name}' כבר קיים!")
+                        return
+                    
+                    try:
+                        # שנה שם קובץ הפרופיל
+                        old_profile_path = Path.cwd() / f"profile_{old_name}.json"
+                        new_profile_path = Path.cwd() / f"profile_{new_name}.json"
+                        
+                        if old_profile_path.exists():
+                            old_profile_path.rename(new_profile_path)
+                        
+                        # שנה שם כל קבצי התרגילים
+                        for old_exercise_file in Path.cwd().glob(f"exercise_{old_name}_*.json"):
+                            exercise_name = old_exercise_file.stem.replace(f"exercise_{old_name}_", "")
+                            new_exercise_file = Path.cwd() / f"exercise_{new_name}_{exercise_name}.json"
+                            old_exercise_file.rename(new_exercise_file)
+                        
+                        # אם זה הפרופיל הפעיל, עדכן את השם הפעיל
+                        if old_name == self.current_profile_name:
+                            self.current_profile_name = new_name
+                            active_profile_path = Path.cwd() / "active_profile.json"
+                            with open(active_profile_path, "w", encoding="utf-8") as f:
+                                json.dump({"active_profile": new_name}, f, ensure_ascii=False, indent=2)
+                            self.setWindowTitle(f"{get_version_string()} - {new_name}")
+                        
+                        # עדכן את הרשימה
+                        item_text = f"👤 {new_name}"
+                        if old_name == self.current_profile_name:
+                            item_text += " (פעיל)"
+                            current_item.setForeground(QColor("#4CAF50"))
+                            font = current_item.font()
+                            font.setBold(True)
+                            current_item.setFont(font)
+                        current_item.setText(item_text)
+                        
+                        QMessageBox.information(dialog, "הצלחה", f"שם הפרופיל שונה מ-'{old_name}' ל-'{new_name}'!")
+                    except Exception as e:
+                        QMessageBox.warning(dialog, "שגיאה", f"שגיאה בעריכת שם הפרופיל: {e}")
+            
+            rename_button.clicked.connect(rename_selected_profile)
+            layout.addWidget(rename_button)
+            
             # מפריד
             separator = QFrame()
             separator.setFrameShape(QFrame.Shape.HLine)
@@ -1787,6 +2279,30 @@ class MainWindow(QMainWindow):
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
         
+        # תמונת פרופיל
+        profile_image_path = self.profile_data.get("profile_image", "")
+        if profile_image_path and Path(profile_image_path).exists():
+            image_label = QLabel()
+            image_label.setFixedSize(120, 120)
+            image_label.setStyleSheet("""
+                QLabel {
+                    border: 4px solid #2196F3;
+                    border-radius: 60px;
+                    background-color: #E3F2FD;
+                }
+            """)
+            image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            image_label.setScaledContents(True)
+            
+            circular_pixmap = create_circular_pixmap(profile_image_path, 120)
+            image_label.setPixmap(circular_pixmap)
+            
+            image_container = QHBoxLayout()
+            image_container.addStretch()
+            image_container.addWidget(image_label)
+            image_container.addStretch()
+            layout.addLayout(image_container)
+        
         # תצוגת הפרטים
         info_widget = QWidget()
         info_widget.setStyleSheet("""
@@ -1862,6 +2378,22 @@ class MainWindow(QMainWindow):
         """)
         edit_button.clicked.connect(lambda: (dialog.close(), self._show_profile_edit()))
         
+        switch_button = QPushButton("🔄 החלף פרופיל")
+        switch_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                padding: 10px 20px;
+                font-size: 12pt;
+                font-weight: bold;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
+        switch_button.clicked.connect(lambda: (dialog.close(), self._switch_profile()))
+        
         close_button = QPushButton("סגור")
         close_button.setStyleSheet("""
             QPushButton {
@@ -1878,6 +2410,7 @@ class MainWindow(QMainWindow):
         close_button.clicked.connect(dialog.close)
         
         buttons_layout.addWidget(edit_button)
+        buttons_layout.addWidget(switch_button)
         buttons_layout.addWidget(close_button)
         
         layout.addLayout(buttons_layout)
@@ -1900,6 +2433,147 @@ class MainWindow(QMainWindow):
         title_label.setStyleSheet("font-size: 16pt; font-weight: bold; color: #2196F3; padding: 10px;")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
+        
+        # תמונת פרופיל
+        image_layout = QHBoxLayout()
+        
+        # תצוגת התמונה
+        profile_image_label = QLabel()
+        profile_image_label.setFixedSize(100, 100)
+        profile_image_label.setStyleSheet("""
+            QLabel {
+                border: 3px solid #2196F3;
+                border-radius: 50px;
+                background-color: #E3F2FD;
+            }
+        """)
+        profile_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        profile_image_label.setScaledContents(True)
+        
+        # טעינת תמונה קיימת או הצגת טקסט ברירת מחדל
+        current_image_path = self.profile_data.get("profile_image", "")
+        if current_image_path and Path(current_image_path).exists():
+            circular_pixmap = create_circular_pixmap(current_image_path, 100)
+            profile_image_label.setPixmap(circular_pixmap)
+        else:
+            profile_image_label.setText("📷\nאין תמונה")
+            profile_image_label.setStyleSheet("""
+                QLabel {
+                    border: 3px dashed #2196F3;
+                    border-radius: 50px;
+                    background-color: #E3F2FD;
+                    color: #2196F3;
+                    font-size: 10pt;
+                }
+            """)
+        
+        image_layout.addStretch()
+        image_layout.addWidget(profile_image_label)
+        
+        # כפתורי תמונה
+        image_buttons_layout = QVBoxLayout()
+        
+        upload_image_button = QPushButton("📤 העלה תמונה")
+        upload_image_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                padding: 8px;
+                font-size: 10pt;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        
+        remove_image_button = QPushButton("🗑️ הסר תמונה")
+        remove_image_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                padding: 8px;
+                font-size: 10pt;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+        """)
+        
+        selected_image_path = [current_image_path]  # משתמשים ברשימה כדי לעדכן מתוך פונקציה פנימית
+        
+        def upload_image():
+            file_path, _ = QFileDialog.getOpenFileName(
+                dialog,
+                "בחר תמונת פרופיל",
+                str(Path.home()),
+                "תמונות (*.png *.jpg *.jpeg *.bmp *.gif)"
+            )
+            
+            if file_path:
+                try:
+                    # פתיחת דיאלוג חיתוך
+                    crop_dialog = ImageCropDialog(file_path, dialog)
+                    if crop_dialog.exec() == QDialog.DialogCode.Accepted:
+                        # קבלת התמונה החתוכה
+                        cropped_pixmap = crop_dialog.get_cropped_pixmap()
+                        
+                        # שמירת התמונה החתוכה - תמיד כ-PNG (תומך בשקיפות)
+                        new_image_path = Path.cwd() / f"profile_image_{self.current_profile_name}.png"
+                        
+                        # שמירה
+                        if not cropped_pixmap.save(str(new_image_path), "PNG"):
+                            raise Exception("שגיאה בשמירת הקובץ")
+                        
+                        selected_image_path[0] = str(new_image_path)
+                        
+                        # עדכון התצוגה
+                        circular_pixmap = create_circular_pixmap(str(new_image_path), 100)
+                        profile_image_label.setPixmap(circular_pixmap)
+                        profile_image_label.setText("")
+                        profile_image_label.setStyleSheet("""
+                            QLabel {
+                                border: 3px solid #2196F3;
+                                border-radius: 50px;
+                                background-color: #E3F2FD;
+                            }
+                        """)
+                except Exception as e:
+                    QMessageBox.warning(dialog, "שגיאה", f"שגיאה בהעלאת התמונה: {e}")
+        
+        def remove_image():
+            selected_image_path[0] = ""
+            profile_image_label.clear()
+            profile_image_label.setText("📷\nאין תמונה")
+            profile_image_label.setStyleSheet("""
+                QLabel {
+                    border: 3px dashed #2196F3;
+                    border-radius: 50px;
+                    background-color: #E3F2FD;
+                    color: #2196F3;
+                    font-size: 10pt;
+                }
+            """)
+            profile_image_label.setScaledContents(False)
+        
+        upload_image_button.clicked.connect(upload_image)
+        remove_image_button.clicked.connect(remove_image)
+        
+        image_buttons_layout.addWidget(upload_image_button)
+        image_buttons_layout.addWidget(remove_image_button)
+        image_buttons_layout.addStretch()
+        
+        image_layout.addLayout(image_buttons_layout)
+        image_layout.addStretch()
+        
+        layout.addLayout(image_layout)
+        
+        # מפריד
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setStyleSheet("color: #ccc;")
+        layout.addWidget(separator)
         
         # טופס הפרטים
         form_layout = QGridLayout()
@@ -2002,7 +2676,8 @@ class MainWindow(QMainWindow):
                 "height": height_input.text().strip(),
                 "weight": weight_input.text().strip(),
                 "age": age_input.text().strip(),
-                "gender": selected_gender
+                "gender": selected_gender,
+                "profile_image": selected_image_path[0]
             }
             self._save_profile(profile_data)
             dialog.accept()
@@ -2032,6 +2707,76 @@ class MainWindow(QMainWindow):
                 self.tab_widget.setCurrentWidget(tab)
                 # עדכן את גיליון הסיכום
                 self._update_summary_tab()
+
+    def _show_tab_context_menu(self, position):
+        """הצגת תפריט הקשר על טאב - רק לתרגילים"""
+        # מציאת הטאב שנלחץ עליו
+        tab_bar = self.tab_widget.tabBar()
+        index = tab_bar.tabAt(position)
+        
+        if index == -1:
+            return
+        
+        # בדוק שזה ExerciseTab ולא SummaryTab
+        tab = self.tab_widget.widget(index)
+        if not isinstance(tab, ExerciseTab):
+            return  # אל תציג תפריט לגיליון סיכום
+        
+        # יצירת תפריט
+        menu = QMenu(self)
+        
+        # פעולת שינוי שם
+        rename_action = QAction("✏️ שנה שם", self)
+        rename_action.triggered.connect(lambda: self._rename_exercise(index))
+        menu.addAction(rename_action)
+        
+        # הצגת התפריט במיקום העכבר
+        menu.exec(tab_bar.mapToGlobal(position))
+    
+    def _rename_exercise(self, index):
+        """שינוי שם תרגיל"""
+        tab = self.tab_widget.widget(index)
+        if not isinstance(tab, ExerciseTab):
+            return
+        
+        old_name = tab.exercise_name
+        
+        # בקש שם חדש
+        new_name, ok = QInputDialog.getText(
+            self,
+            "שינוי שם תרגיל",
+            f"שם חדש עבור '{old_name}':",
+            QLineEdit.EchoMode.Normal,
+            old_name
+        )
+        
+        if ok and new_name.strip() and new_name != old_name:
+            # בדוק שאין תרגיל עם שם זהה
+            existing = set()
+            for i in range(self.tab_widget.count()):
+                t = self.tab_widget.widget(i)
+                if isinstance(t, ExerciseTab) and i != index:
+                    existing.add(t.exercise_name)
+            
+            if new_name in existing:
+                QMessageBox.warning(self, "שגיאה", f"תרגיל בשם '{new_name}' כבר קיים!")
+                return
+            
+            # שנה את שם הקובץ
+            old_path = Path.cwd() / f"exercise_{self.current_profile_name}_{old_name}.json"
+            new_path = Path.cwd() / f"exercise_{self.current_profile_name}_{new_name}.json"
+            
+            try:
+                if old_path.exists():
+                    old_path.rename(new_path)
+                
+                # עדכן את הטאב
+                tab.exercise_name = new_name
+                self.tab_widget.setTabText(index, new_name)
+                
+                self.statusBar().showMessage(f"שם התרגיל שונה ל-'{new_name}'", 2000)
+            except Exception as e:
+                QMessageBox.warning(self, "שגיאה", f"שגיאה בשינוי שם: {e}")
 
     def _update_summary_tab(self):
         """עדכון גיליון הסיכום - מוצג רק אם יש לפחות 2 תרגילים"""
